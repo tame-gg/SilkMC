@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-@@ -1,0 +_,218 @@
+@@ -1,0 +_,240 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
@@ -85,6 +85,19 @@
 +        return policy().disableIncompatiblePlugins;
 +    }
 +
++    public static boolean shouldLogAnalysis() {
++        return policy().logAnalysis;
++    }
++
++    public static boolean allowsUnknownPlugins() {
++        final Policy p = policy();
++        return !p.strictMode || p.allowUnknownPlugins;
++    }
++
++    public static boolean isStrictMode() {
++        return policy().strictMode;
++    }
++
 +    private static void enforce(final String pluginName, final boolean supported) {
 +        if (supported) {
 +            return;
@@ -123,6 +136,9 @@
 +        if (!CONFIG_FILE.exists()) {
 +            config.set("plugins.unsupported-plugin-mode", "WARN");
 +            config.set("plugins.warn-on-load", true);
++            config.set("compatibility.strict-mode", true);
++            config.set("compatibility.allow-unknown-plugins", false);
++            config.set("compatibility.log-analysis", true);
 +            saveConfig(config);
 +        }
 +
@@ -130,7 +146,10 @@
 +            UnsupportedPluginMode.from(config.getString("plugins.unsupported-plugin-mode", "WARN")),
 +            config.getBoolean("plugins.warn-on-load", true),
 +            config.getBoolean("plugins.disable-incompatible-plugins", true),
-+            config.getBoolean("plugins.log-compatibility-stacktraces", true)
++            config.getBoolean("plugins.log-compatibility-stacktraces", true),
++            config.getBoolean("compatibility.strict-mode", true),
++            config.getBoolean("compatibility.allow-unknown-plugins", false),
++            config.getBoolean("compatibility.log-analysis", true)
 +        );
 +    }
 +
@@ -202,7 +221,10 @@
 +        UnsupportedPluginMode mode,
 +        boolean warnOnLoad,
 +        boolean disableIncompatiblePlugins,
-+        boolean logCompatibilityStacktraces
++        boolean logCompatibilityStacktraces,
++        boolean strictMode,
++        boolean allowUnknownPlugins,
++        boolean logAnalysis
 +    ) {
 +    }
 +

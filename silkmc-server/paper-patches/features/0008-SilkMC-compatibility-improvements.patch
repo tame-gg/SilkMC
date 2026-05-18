@@ -223,9 +223,9 @@ index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..bdb85fcdbd67d59b1282544ad9ea37c3
 -        if (!configuration.isFoliaSupported()) {
 -            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
 -        }
-+        // SilkMC start - compatibility policy
-+        gg.tame.silkmc.server.compat.SilkPluginCompatibility.enforce(configuration);
-+        // SilkMC end - compatibility policy
++        // SilkMC start - compatibility manager
++        gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.inspectAndEnforce(file, configuration);
++        // SilkMC end - compatibility manager
          // Folia end - block plugins not marked as supported
          Logger jul = PaperPluginLogger.getLogger(configuration);
          ComponentLogger logger = ComponentLogger.logger(jul.getName());
@@ -240,9 +240,9 @@ index 6ef0042a355c65262bdb89dcf151bd644653216d..62494de82c0dbd2f464c08e36f202814
 -        if (!configuration.isFoliaSupported()) {
 -            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
 -        }
-+        // SilkMC start - compatibility policy
-+        gg.tame.silkmc.server.compat.SilkPluginCompatibility.enforceRuntime(configuration);
-+        // SilkMC end - compatibility policy
++        // SilkMC start - compatibility manager
++        gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.inspectAndEnforce(file, configuration);
++        // SilkMC end - compatibility manager
          // Folia end - block plugins not marked as supported
          // Copied from SimplePluginManager#loadPlugins
          // Spigot doesn't validate the name when the config is created, and instead when the plugin is loaded.

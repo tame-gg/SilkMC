@@ -15,3 +15,14 @@ plugins:
 
   # Include compatibility failure stack traces in logs
   log-compatibility-stacktraces: true
+
+compatibility:
+  # Strict-mode causes plugins classified as UNKNOWN by the SilkPluginCompatibilityManager
+  # to be blocked at load time, unless allow-unknown-plugins is true.
+  strict-mode: true
+
+  # When true, UNKNOWN plugins are loaded with a warning instead of being blocked.
+  allow-unknown-plugins: false
+
+  # When true, SilkMC prints a one-line compatibility inspection summary for every plugin.
+  log-analysis: true
