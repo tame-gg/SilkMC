@@ -19,6 +19,33 @@ SilkMC currently supports:
 - automatic disabling for plugins that hit known unsafe compatibility boundaries
 - upstream enum compatibility toggles through `bukkit.yml`
 
+## Per-plugin overrides
+
+SilkMC writes a second operator-owned file named `silkmc-plugin-overrides.yml` on first boot:
+
+```yaml
+overrides: {}
+```
+
+Each entry can pin a compatibility decision before SilkMC applies its normal jar inspection heuristics:
+
+```yaml
+overrides:
+  "LegacyClaims":
+    classification: SAFE
+    force-load: false
+    reason: "Validated on staging after replacing legacy sync world access."
+  "InternalBridge":
+    classification: AUTO
+    force-load: true
+    reason: "Temporary production exception while upstream metadata catches up."
+```
+
+- `classification` accepts `SAFE`, `COMPATIBLE`, `UNSAFE`, `UNKNOWN`, or `AUTO`.
+- `AUTO` keeps SilkMC's scanned classification and only applies `force-load` if set.
+- `force-load: true` bypasses strict-mode blocking for an otherwise `UNKNOWN` plugin and is logged at `INFO` with the operator reason.
+- Every override application is logged so operators have an audit trail for manual exceptions.
+
 ## Fail-safe behavior
 
 When SilkMC cannot safely emulate a legacy expectation, it should:

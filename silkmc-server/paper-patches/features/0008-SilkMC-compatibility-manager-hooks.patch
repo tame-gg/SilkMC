@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <koelss@users.noreply.github.com>
+Date: Mon, 18 May 2026 18:20:00 -0500
+Subject: [PATCH] SilkMC compatibility manager hooks
+
+diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
+index 0a27b468560ccf4b9588cd12d50c02e442f3024f..b62bac839db1963c10801fc2e4e46a1468c0693d 100644
+--- a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
++++ b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
+@@ -1,6 +1,7 @@
+ package io.papermc.paper.plugin.provider.type.paper;
+ 
+ import com.destroystokyo.paper.utils.PaperPluginLogger;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
+ import io.papermc.paper.plugin.bootstrap.PluginProviderContext;
+ import io.papermc.paper.plugin.bootstrap.PluginProviderContextImpl;
+ import io.papermc.paper.plugin.entrypoint.classloader.PaperPluginClassLoader;
+@@ -25,11 +26,7 @@ class PaperPluginProviderFactory implements PluginTypeFactory<PaperPluginParent,
+ 
+     @Override
+     public PaperPluginParent build(JarFile file, PaperPluginMeta configuration, Path source) {
+-        // Folia start - block plugins not marked as supported
+-        if (!configuration.isFoliaSupported()) {
+-            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
+-        }
+-        // Folia end - block plugins not marked as supported
++        SilkPluginCompatibility.inspectAndEnforce(source, configuration);
+         Logger jul = PaperPluginLogger.getLogger(configuration);
+         ComponentLogger logger = ComponentLogger.logger(jul.getName());
+         PluginProviderContext context = PluginProviderContextImpl.create(configuration, logger, source);
+diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
+index 5c40c3d0ea8e1e59d39d5f4da6377309119e784b..88a0516e14dfa8dbbd16c8eff54cce336e721f53 100644
+--- a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
++++ b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
+@@ -1,6 +1,7 @@
+ package io.papermc.paper.plugin.provider.type.spigot;
+ 
+ import com.destroystokyo.paper.utils.PaperPluginLogger;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
+ import io.papermc.paper.plugin.bootstrap.PluginProviderContextImpl;
+ import io.papermc.paper.plugin.entrypoint.classloader.PaperSimplePluginClassLoader;
+ import io.papermc.paper.plugin.loader.PaperClasspathBuilder;
+@@ -27,11 +28,7 @@ class SpigotPluginProviderFactory implements PluginTypeFactory<SpigotPluginProvi
+ 
+     @Override
+     public SpigotPluginProvider build(JarFile file, PluginDescriptionFile configuration, Path source) throws InvalidDescriptionException {
+-        // Folia start - block plugins not marked as supported
+-        if (!configuration.isFoliaSupported()) {
+-            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
+-        }
+-        // Folia end - block plugins not marked as supported
++        SilkPluginCompatibility.inspectAndEnforce(source, configuration);
+         // Copied from SimplePluginManager#loadPlugins
+         // Spigot doesn't validate the name when the config is created, and instead when the plugin is loaded.
+         // Paper plugin configuration will do these checks in config serializer instead of when this is created.

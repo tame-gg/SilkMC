@@ -1,0 +1,440 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
+@@ -1,0 +_,437 @@
++package gg.tame.silkmc.server.compat;
++
++import io.papermc.paper.plugin.configuration.PluginMeta;
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Path;
++import java.text.DecimalFormat;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.Collections;
++import java.util.Comparator;
++import java.util.EnumMap;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Objects;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.jar.JarEntry;
++import java.util.jar.JarFile;
++import java.util.logging.Logger;
++import java.util.zip.ZipEntry;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.minecraft.server.MinecraftServer;
++import org.jetbrains.annotations.Nullable;
++
++public final class SilkPluginCompatibilityManager {
++
++    private static final Logger LOGGER = Logger.getLogger("SilkMC");
++    private static final DecimalFormat MSPT_FORMAT = new DecimalFormat("#,##0.00");
++    private static final Map<String, Inspection> INSPECTIONS = new ConcurrentHashMap<>();
++    private static final Map<String, Report> REPORTS = new ConcurrentHashMap<>();
++    private static final Map<String, String> OVERRIDE_LOG_KEYS = new ConcurrentHashMap<>();
++
++    private SilkPluginCompatibilityManager() {
++    }
++
++    public static void inspectAndEnforce(final Path source, final PluginMeta meta) {
++        final String key = normalizePluginName(meta.getName());
++        final Inspection inspection = INSPECTIONS.compute(key, (ignored, existing) -> {
++            final Path absoluteSource = source.toAbsolutePath().normalize();
++            if (existing != null && existing.matches(absoluteSource, meta)) {
++                return existing;
++            }
++            try {
++                return inspect(absoluteSource, meta);
++            } catch (final IOException ex) {
++                throw new RuntimeException("Failed to inspect plugin '" + meta.getName() + "'", ex);
++            }
++        });
++
++        final Report report = buildReport(inspection, meta);
++        REPORTS.put(key, report);
++
++        final Decision decision = decide(report);
++        if (decision.logWarning() && SilkPluginCompatibility.markWarned(meta.getName())) {
++            LOGGER.warning(decision.warningMessage());
++        }
++        if (decision.blocked()) {
++            throw new RuntimeException(decision.failureMessage());
++        }
++    }
++
++    public static void refreshReports() {
++        for (final Inspection inspection : INSPECTIONS.values()) {
++            REPORTS.put(normalizePluginName(inspection.pluginName()), buildReport(inspection, inspection.meta()));
++        }
++    }
++
++    public static Summary summarize() {
++        final EnumMap<Classification, Integer> counts = new EnumMap<>(Classification.class);
++        for (final Classification classification : Classification.values()) {
++            counts.put(classification, 0);
++        }
++        int shimmed = 0;
++        for (final Report report : REPORTS.values()) {
++            counts.compute(report.classification(), (ignored, current) -> Integer.valueOf(current == null ? 1 : current.intValue() + 1));
++            if (report.shimActive()) {
++                ++shimmed;
++            }
++        }
++        return new Summary(
++            counts.get(Classification.SAFE),
++            counts.get(Classification.COMPATIBLE),
++            counts.get(Classification.UNKNOWN),
++            counts.get(Classification.UNSAFE),
++            shimmed
++        );
++    }
++
++    public static List<Report> reports() {
++        final List<Report> reports = new ArrayList<>(REPORTS.values());
++        reports.sort(Comparator.comparing(Report::pluginName, String.CASE_INSENSITIVE_ORDER));
++        return reports;
++    }
++
++    public static @Nullable Report report(final String pluginName) {
++        return REPORTS.get(normalizePluginName(pluginName));
++    }
++
++    public static Component renderStatusLine() {
++        final RegionStatus regionStatus = collectRegionStatus();
++        final Summary summary = summarize();
++
++        return Component.text()
++            .append(label("SilkMC "))
++            .append(value(MinecraftServer.getServer().getServerVersion()))
++            .append(separator(" | "))
++            .append(label("regions="))
++            .append(value(Integer.toString(regionStatus.regionCount())))
++            .append(separator(" | "))
++            .append(label("worst-mspt="))
++            .append(mspt(regionStatus.worstRegionMspt()))
++            .append(separator(" | "))
++            .append(label("safe="))
++            .append(classificationValue(summary.safe(), Classification.SAFE))
++            .append(separator(" "))
++            .append(label("compatible="))
++            .append(classificationValue(summary.compatible(), Classification.COMPATIBLE))
++            .append(separator(" "))
++            .append(label("unknown="))
++            .append(classificationValue(summary.unknown(), Classification.UNKNOWN))
++            .append(separator(" "))
++            .append(label("unsafe="))
++            .append(classificationValue(summary.unsafe(), Classification.UNSAFE))
++            .append(separator(" | "))
++            .append(label("shimmed="))
++            .append(value(Integer.toString(summary.shimmed())))
++            .build();
++    }
++
++    public static RegionStatus collectRegionStatus() {
++        final List<io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData>> regions =
++            new ArrayList<>();
++        for (final org.bukkit.World bukkitWorld : org.bukkit.Bukkit.getWorlds()) {
++            final net.minecraft.server.level.ServerLevel world = ((org.bukkit.craftbukkit.CraftWorld) bukkitWorld).getHandle();
++            world.regioniser.computeForAllRegions(regions::add);
++        }
++
++        final long now = System.nanoTime();
++        double worstMspt = 0.0D;
++        for (final io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData> region : regions) {
++            final ca.spottedleaf.moonrise.common.time.TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++            if (report == null) {
++                continue;
++            }
++            worstMspt = Math.max(worstMspt, report.timePerTickData().segmentAll().average() / 1.0E6D);
++        }
++
++        return new RegionStatus(regions.size(), worstMspt);
++    }
++
++    private static Inspection inspect(final Path source, final PluginMeta meta) throws IOException {
++        final List<String> reasons = new ArrayList<>();
++        final List<String> technicalDetails = new ArrayList<>();
++        int scannedClassCount = 0;
++        boolean referencesCraftBukkit = false;
++        boolean referencesNms = false;
++        boolean referencesLegacyThreading = false;
++        boolean referencesLegacyScheduler = false;
++
++        try (JarFile jar = new JarFile(source.toFile())) {
++            final var entries = jar.entries();
++            while (entries.hasMoreElements()) {
++                final JarEntry entry = entries.nextElement();
++                if (!(entry instanceof ZipEntry zipEntry) || zipEntry.isDirectory() || !entry.getName().endsWith(".class")) {
++                    continue;
++                }
++                ++scannedClassCount;
++                try (InputStream input = jar.getInputStream(entry)) {
++                    final String byteString = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
++                    referencesCraftBukkit |= byteString.contains("org/bukkit/craftbukkit/");
++                    referencesNms |= byteString.contains("net/minecraft/") || byteString.contains("com/mojang/brigadier/");
++                    referencesLegacyThreading |= byteString.contains("org/spigotmc/AsyncCatcher")
++                        || byteString.contains("isPrimaryThread")
++                        || byteString.contains("thread failed main thread check");
++                    referencesLegacyScheduler |= byteString.contains("scheduleSyncDelayedTask")
++                        || byteString.contains("scheduleSyncRepeatingTask")
++                        || byteString.contains("callSyncMethod");
++                }
++            }
++        }
++
++        final NmsAccessLevel nmsAccessLevel;
++        if (referencesNms) {
++            nmsAccessLevel = NmsAccessLevel.NMS;
++        } else if (referencesCraftBukkit) {
++            nmsAccessLevel = NmsAccessLevel.CRAFTBUKKIT;
++        } else {
++            nmsAccessLevel = NmsAccessLevel.NONE;
++        }
++
++        final Classification heuristicClassification;
++        if (meta.isFoliaSupported()) {
++            heuristicClassification = Classification.SAFE;
++            reasons.add("Declares `silk-supported: true` or legacy `folia-supported: true` metadata.");
++        } else if (referencesLegacyThreading) {
++            heuristicClassification = Classification.UNSAFE;
++            reasons.add("Bytecode references legacy single-thread or async-catcher checks that SilkMC cannot safely emulate.");
++        } else if (referencesCraftBukkit || referencesNms || referencesLegacyScheduler) {
++            heuristicClassification = Classification.UNKNOWN;
++            reasons.add("Touches legacy server internals or scheduler APIs and should be reviewed by an operator.");
++        } else {
++            heuristicClassification = Classification.COMPATIBLE;
++            reasons.add("No direct legacy server internals were detected in the plugin bytecode scan.");
++        }
++
++        technicalDetails.add("Source jar: " + source);
++        technicalDetails.add("Main class: " + meta.getMainClass());
++        technicalDetails.add("Declared compatibility metadata: " + (meta.isFoliaSupported() ? "present" : "absent"));
++        technicalDetails.add("Scanned classes: " + scannedClassCount);
++        technicalDetails.add("Detected legacy scheduler references: " + yesNo(referencesLegacyScheduler));
++        technicalDetails.add("Detected legacy thread checks: " + yesNo(referencesLegacyThreading));
++        technicalDetails.add("Detected CraftBukkit internals: " + yesNo(referencesCraftBukkit));
++        technicalDetails.add("Detected NMS internals: " + yesNo(referencesNms));
++
++        return new Inspection(
++            source,
++            meta.getName(),
++            meta.getVersion(),
++            meta,
++            determineFamily(meta),
++            scannedClassCount,
++            nmsAccessLevel,
++            heuristicClassification,
++            List.copyOf(reasons),
++            List.copyOf(technicalDetails)
++        );
++    }
++
++    private static Report buildReport(final Inspection inspection, final PluginMeta meta) {
++        final SilkPluginCompatibility.OverrideEntry override = SilkPluginCompatibility.overrideFor(meta.getName());
++        final List<String> reasons = new ArrayList<>(inspection.reasons());
++        final List<String> technicalDetails = new ArrayList<>(inspection.technicalDetails());
++
++        Classification effectiveClassification = inspection.heuristicClassification();
++        boolean overrideApplied = false;
++        boolean forceLoad = false;
++        String overrideReason = "";
++
++        if (override != null && (override.classificationOverride() != SilkPluginCompatibility.ClassificationOverride.AUTO || override.forceLoad())) {
++            overrideApplied = true;
++            forceLoad = override.forceLoad();
++            overrideReason = override.reason();
++            if (override.classificationOverride() != SilkPluginCompatibility.ClassificationOverride.AUTO) {
++                effectiveClassification = override.classificationOverride().toClassification();
++                reasons.add("Operator override forced classification to " + effectiveClassification.name() + ".");
++            } else if (forceLoad) {
++                reasons.add("Operator override enables force-load without changing the heuristic classification.");
++            }
++            technicalDetails.add("Override reason: " + (overrideReason.isBlank() ? "(none provided)" : overrideReason));
++            logOverrideApplication(inspection.pluginName(), override, effectiveClassification);
++        }
++
++        return new Report(
++            inspection.pluginName(),
++            inspection.version(),
++            effectiveClassification,
++            inspection.family(),
++            false,
++            inspection.nmsAccessLevel(),
++            inspection.scannedClassCount(),
++            overrideApplied,
++            forceLoad,
++            overrideReason,
++            List.copyOf(reasons),
++            List.copyOf(technicalDetails)
++        );
++    }
++
++    private static void logOverrideApplication(final String pluginName, final SilkPluginCompatibility.OverrideEntry override, final Classification classification) {
++        final String reason = override.reason().isBlank() ? "(no operator reason provided)" : override.reason();
++        final String logKey = classification.name() + "|" + override.forceLoad() + "|" + reason;
++        final String previous = OVERRIDE_LOG_KEYS.put(normalizePluginName(pluginName), logKey);
++        if (Objects.equals(previous, logKey)) {
++            return;
++        }
++        LOGGER.info("Applying SilkMC compatibility override for '" + pluginName + "': classification="
++            + override.classificationOverride().name()
++            + ", force-load=" + override.forceLoad()
++            + ", effective=" + classification.name()
++            + ", reason=" + reason);
++    }
++
++    private static Decision decide(final Report report) {
++        final String pluginName = report.pluginName();
++        final String metadataMessage = "Plugin '" + pluginName + "' does not declare `silk-supported: true` (legacy `folia-supported: true` is also accepted).";
++
++        if (report.classification() == Classification.UNSAFE && !report.forceLoad()) {
++            return new Decision(
++                true,
++                false,
++                metadataMessage,
++                "Plugin '" + pluginName + "' was classified as UNSAFE by SilkMC compatibility inspection. Set an override only after validating it on a staging server."
++            );
++        }
++
++        if (report.classification() == Classification.UNKNOWN && SilkPluginCompatibility.requiresExplicitDeclaration() && !report.forceLoad()) {
++            return new Decision(
++                true,
++                false,
++                metadataMessage,
++                metadataMessage + " SilkMC is configured to require explicit compatibility metadata for UNKNOWN plugins."
++            );
++        }
++
++        if (report.classification() == Classification.COMPATIBLE || report.classification() == Classification.UNKNOWN) {
++            return new Decision(
++                false,
++                SilkPluginCompatibility.shouldWarnOnLoad(),
++                metadataMessage + " Loading with SilkMC classification " + report.classification().name() + ".",
++                ""
++            );
++        }
++
++        return new Decision(false, false, "", "");
++    }
++
++    private static String determineFamily(final PluginMeta meta) {
++        final String mainClass = meta.getMainClass();
++        final String[] parts = mainClass.split("\\.");
++        if (parts.length >= 2) {
++            return parts[0] + "." + parts[1];
++        }
++        return meta.getName();
++    }
++
++    private static String yesNo(final boolean value) {
++        return value ? "yes" : "no";
++    }
++
++    private static String normalizePluginName(final String pluginName) {
++        return pluginName.trim().toLowerCase(Locale.ROOT);
++    }
++
++    private static Component label(final String text) {
++        return Component.text(text, NamedTextColor.GRAY);
++    }
++
++    private static Component value(final String text) {
++        return Component.text(text, NamedTextColor.WHITE);
++    }
++
++    private static Component separator(final String text) {
++        return Component.text(text, NamedTextColor.DARK_GRAY);
++    }
++
++    private static Component mspt(final double value) {
++        final NamedTextColor color;
++        if (value >= 50.0D) {
++            color = NamedTextColor.RED;
++        } else if (value >= 35.0D) {
++            color = NamedTextColor.GOLD;
++        } else if (value >= 20.0D) {
++            color = NamedTextColor.YELLOW;
++        } else {
++            color = NamedTextColor.GREEN;
++        }
++        return Component.text(MSPT_FORMAT.format(value), color);
++    }
++
++    private static Component classificationValue(final int count, final Classification classification) {
++        final NamedTextColor color = switch (classification) {
++            case SAFE -> NamedTextColor.GREEN;
++            case COMPATIBLE -> NamedTextColor.AQUA;
++            case UNKNOWN -> NamedTextColor.YELLOW;
++            case UNSAFE -> NamedTextColor.RED;
++        };
++        return Component.text(Integer.toString(count), color);
++    }
++
++    private record Inspection(
++        Path source,
++        String pluginName,
++        String version,
++        PluginMeta meta,
++        String family,
++        int scannedClassCount,
++        NmsAccessLevel nmsAccessLevel,
++        Classification heuristicClassification,
++        List<String> reasons,
++        List<String> technicalDetails
++    ) {
++        private boolean matches(final Path otherSource, final PluginMeta otherMeta) {
++            return this.source.equals(otherSource)
++                && this.version.equals(otherMeta.getVersion())
++                && this.meta.getMainClass().equals(otherMeta.getMainClass());
++        }
++    }
++
++    private record Decision(boolean blocked, boolean logWarning, String warningMessage, String failureMessage) {
++    }
++
++    public record RegionStatus(int regionCount, double worstRegionMspt) {
++    }
++
++    public record Summary(int safe, int compatible, int unknown, int unsafe, int shimmed) {
++    }
++
++    public record Report(
++        String pluginName,
++        String version,
++        Classification classification,
++        String family,
++        boolean shimActive,
++        NmsAccessLevel nmsAccessLevel,
++        int scannedClassCount,
++        boolean overrideApplied,
++        boolean forceLoad,
++        String overrideReason,
++        List<String> reasons,
++        List<String> technicalDetails
++    ) {
++        public List<String> reasons() {
++            return this.reasons == null ? Collections.emptyList() : this.reasons;
++        }
++
++        public List<String> technicalDetails() {
++            return this.technicalDetails == null ? Collections.emptyList() : this.technicalDetails;
++        }
++    }
++
++    public enum Classification {
++        SAFE,
++        COMPATIBLE,
++        UNKNOWN,
++        UNSAFE
++    }
++
++    public enum NmsAccessLevel {
++        NONE,
++        CRAFTBUKKIT,
++        NMS
++    }
++}

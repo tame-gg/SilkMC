@@ -1,17 +1,21 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-@@ -1,0 +_,211 @@
+@@ -1,0 +_,312 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
 +import java.io.File;
 +import java.io.IOException;
++import java.nio.file.Path;
++import java.util.LinkedHashMap;
 +import java.util.Locale;
++import java.util.Map;
 +import java.util.Objects;
 +import java.util.Set;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.logging.Level;
 +import java.util.logging.Logger;
++import org.bukkit.configuration.ConfigurationSection;
 +import org.bukkit.configuration.file.YamlConfiguration;
 +import org.bukkit.plugin.InvalidPluginException;
 +import org.bukkit.plugin.Plugin;
@@ -21,6 +25,7 @@
 +
 +    private static final Logger LOGGER = Logger.getLogger("SilkMC");
 +    private static final File CONFIG_FILE = new File("silkmc-compatibility.yml");
++    private static final File OVERRIDES_FILE = new File("silkmc-plugin-overrides.yml");
 +    private static final Set<String> WARNED_PLUGINS = ConcurrentHashMap.newKeySet();
 +    private static final ThreadLocal<LifecycleContext> ACTIVE_PLUGIN_LIFECYCLE = new ThreadLocal<>();
 +    private static volatile Policy cachedPolicy;
@@ -30,6 +35,10 @@
 +
 +    public static void enforce(final PaperPluginMeta meta) {
 +        enforce(meta.getDisplayName(), meta.isFoliaSupported());
++    }
++
++    public static void inspectAndEnforce(final Path source, final io.papermc.paper.plugin.configuration.PluginMeta meta) {
++        SilkPluginCompatibilityManager.inspectAndEnforce(source, meta);
 +    }
 +
 +    public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
@@ -85,6 +94,30 @@
 +        return policy().disableIncompatiblePlugins;
 +    }
 +
++    public static boolean requiresExplicitDeclaration() {
++        return policy().mode == UnsupportedPluginMode.REQUIRE_DECLARATION;
++    }
++
++    public static boolean shouldWarnOnLoad() {
++        return policy().warnOnLoad;
++    }
++
++    public static boolean markWarned(final String pluginName) {
++        return WARNED_PLUGINS.add(normalizePluginName(pluginName));
++    }
++
++    public static @org.jetbrains.annotations.Nullable OverrideEntry overrideFor(final String pluginName) {
++        return policy().overrides.get(normalizePluginName(pluginName));
++    }
++
++    public static void reloadConfiguration() {
++        synchronized (SilkPluginCompatibility.class) {
++            cachedPolicy = loadPolicy();
++        }
++        WARNED_PLUGINS.clear();
++        SilkPluginCompatibilityManager.refreshReports();
++    }
++
 +    private static void enforce(final String pluginName, final boolean supported) {
 +        if (supported) {
 +            return;
@@ -119,26 +152,60 @@
 +
 +    private static Policy loadPolicy() {
 +        final YamlConfiguration config = YamlConfiguration.loadConfiguration(CONFIG_FILE);
++        final YamlConfiguration overridesConfig = YamlConfiguration.loadConfiguration(OVERRIDES_FILE);
 +
 +        if (!CONFIG_FILE.exists()) {
 +            config.set("plugins.unsupported-plugin-mode", "WARN");
 +            config.set("plugins.warn-on-load", true);
-+            saveConfig(config);
++            config.set("plugins.disable-incompatible-plugins", true);
++            config.set("plugins.log-compatibility-stacktraces", true);
++            saveConfig(config, CONFIG_FILE, "SilkMC compatibility config");
++        }
++        if (!OVERRIDES_FILE.exists()) {
++            overridesConfig.createSection("overrides");
++            saveConfig(overridesConfig, OVERRIDES_FILE, "SilkMC plugin override config");
 +        }
 +
 +        return new Policy(
 +            UnsupportedPluginMode.from(config.getString("plugins.unsupported-plugin-mode", "WARN")),
 +            config.getBoolean("plugins.warn-on-load", true),
 +            config.getBoolean("plugins.disable-incompatible-plugins", true),
-+            config.getBoolean("plugins.log-compatibility-stacktraces", true)
++            config.getBoolean("plugins.log-compatibility-stacktraces", true),
++            loadOverrides(overridesConfig)
 +        );
 +    }
 +
-+    private static void saveConfig(final YamlConfiguration config) {
++    private static Map<String, OverrideEntry> loadOverrides(final YamlConfiguration config) {
++        final ConfigurationSection section = config.getConfigurationSection("overrides");
++        if (section == null) {
++            return Map.of();
++        }
++
++        final Map<String, OverrideEntry> overrides = new LinkedHashMap<>();
++        for (final String pluginName : section.getKeys(false)) {
++            final String basePath = "overrides." + pluginName;
++            overrides.put(
++                normalizePluginName(pluginName),
++                new OverrideEntry(
++                    pluginName,
++                    ClassificationOverride.from(config.getString(basePath + ".classification", "AUTO")),
++                    config.getBoolean(basePath + ".force-load", false),
++                    Objects.toString(config.getString(basePath + ".reason", ""), "")
++                )
++            );
++        }
++        return Map.copyOf(overrides);
++    }
++
++    private static String normalizePluginName(final String pluginName) {
++        return pluginName.trim().toLowerCase(Locale.ROOT);
++    }
++
++    private static void saveConfig(final YamlConfiguration config, final File target, final String description) {
 +        try {
-+            config.save(CONFIG_FILE);
++            config.save(target);
 +        } catch (final IOException ex) {
-+            LOGGER.log(Level.WARNING, "Failed to write default SilkMC compatibility config to " + CONFIG_FILE.getAbsolutePath(), ex);
++            LOGGER.log(Level.WARNING, "Failed to write " + description + " to " + target.getAbsolutePath(), ex);
 +        }
 +    }
 +
@@ -199,8 +266,38 @@
 +        UnsupportedPluginMode mode,
 +        boolean warnOnLoad,
 +        boolean disableIncompatiblePlugins,
-+        boolean logCompatibilityStacktraces
++        boolean logCompatibilityStacktraces,
++        Map<String, OverrideEntry> overrides
 +    ) {
++    }
++
++    public record OverrideEntry(String pluginName, ClassificationOverride classificationOverride, boolean forceLoad, String reason) {
++    }
++
++    public enum ClassificationOverride {
++        AUTO,
++        SAFE,
++        COMPATIBLE,
++        UNKNOWN,
++        UNSAFE;
++
++        private static ClassificationOverride from(final String value) {
++            try {
++                return ClassificationOverride.valueOf(value.trim().toUpperCase(Locale.ROOT));
++            } catch (final IllegalArgumentException ex) {
++                return AUTO;
++            }
++        }
++
++        public SilkPluginCompatibilityManager.Classification toClassification() {
++            return switch (this) {
++                case SAFE -> SilkPluginCompatibilityManager.Classification.SAFE;
++                case COMPATIBLE -> SilkPluginCompatibilityManager.Classification.COMPATIBLE;
++                case UNKNOWN -> SilkPluginCompatibilityManager.Classification.UNKNOWN;
++                case UNSAFE -> SilkPluginCompatibilityManager.Classification.UNSAFE;
++                case AUTO -> throw new IllegalStateException("AUTO is not an effective classification");
++            };
++        }
 +    }
 +
 +    private enum UnsupportedPluginMode {

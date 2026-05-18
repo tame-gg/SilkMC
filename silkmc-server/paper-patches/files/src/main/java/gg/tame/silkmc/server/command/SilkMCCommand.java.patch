@@ -1,0 +1,169 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java
+@@ -1,0 +_,166 @@
++package gg.tame.silkmc.server.command;
++
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Report;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Summary;
++import io.papermc.paper.threadedregions.commands.CommandUtil;
++import java.util.Arrays;
++import java.util.List;
++import java.util.Locale;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.kyori.adventure.text.format.TextDecoration;
++import org.bukkit.Bukkit;
++import org.bukkit.Location;
++import org.bukkit.command.Command;
++import org.bukkit.command.CommandSender;
++import org.bukkit.permissions.Permission;
++import org.bukkit.permissions.PermissionDefault;
++import org.checkerframework.checker.nullness.qual.Nullable;
++
++public final class SilkMCCommand extends Command {
++
++    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "report", "reload");
++    private static final int PAGE_SIZE = 8;
++
++    public SilkMCCommand() {
++        super("silkmc");
++        this.description = "SilkMC operator and compatibility commands";
++        this.usageMessage = "/silkmc <status|plugins|report|reload>";
++        this.setPermission("silkmc.command");
++        final var pluginManager = Bukkit.getPluginManager();
++        if (pluginManager.getPermission("silkmc.command") == null) {
++            pluginManager.addPermission(new Permission("silkmc.command", PermissionDefault.OP));
++        }
++    }
++
++    @Override
++    public boolean execute(final CommandSender sender, final String commandLabel, final String[] args) {
++        if (!this.testPermission(sender)) {
++            return true;
++        }
++        if (args.length == 0) {
++            sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
++            return false;
++        }
++
++        return switch (args[0].toLowerCase(Locale.ROOT)) {
++            case "status" -> this.executeStatus(sender);
++            case "plugins" -> this.executePlugins(sender, args);
++            case "report" -> this.executeReport(sender, args);
++            case "reload" -> this.executeReload(sender);
++            default -> {
++                sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
++                yield false;
++            }
++        };
++    }
++
++    @Override
++    public List<String> tabComplete(final CommandSender sender, final String alias, final String[] args, final @Nullable Location location) {
++        if (args.length <= 1) {
++            return CommandUtil.getSortedList(SUBCOMMANDS, args.length == 0 ? "" : args[0]);
++        }
++        if (args.length == 2 && args[0].equalsIgnoreCase("report")) {
++            return CommandUtil.getSortedList(SilkPluginCompatibilityManager.reports(), Report::pluginName, args[1]);
++        }
++        return List.of();
++    }
++
++    private boolean executeStatus(final CommandSender sender) {
++        sender.sendMessage(SilkPluginCompatibilityManager.renderStatusLine());
++        return true;
++    }
++
++    private boolean executePlugins(final CommandSender sender, final String[] args) {
++        final List<Report> reports = SilkPluginCompatibilityManager.reports();
++        final int totalPages = Math.max(1, (reports.size() + PAGE_SIZE - 1) / PAGE_SIZE);
++
++        int page = 1;
++        if (args.length >= 2) {
++            try {
++                page = Integer.parseInt(args[1]);
++            } catch (final NumberFormatException ex) {
++                sender.sendMessage(Component.text("Page must be a whole number.", NamedTextColor.RED));
++                return true;
++            }
++        }
++
++        if (page < 1 || page > totalPages) {
++            sender.sendMessage(Component.text("Page must be between 1 and " + totalPages + ".", NamedTextColor.RED));
++            return true;
++        }
++
++        final int fromIndex = (page - 1) * PAGE_SIZE;
++        final int toIndex = Math.min(reports.size(), fromIndex + PAGE_SIZE);
++        final Summary summary = SilkPluginCompatibilityManager.summarize();
++
++        sender.sendMessage(Component.text("SilkMC compatibility plugins page " + page + "/" + totalPages, NamedTextColor.AQUA, TextDecoration.BOLD));
++        sender.sendMessage(Component.text("safe=" + summary.safe() + " compatible=" + summary.compatible() + " unknown=" + summary.unknown() + " unsafe=" + summary.unsafe() + " shimmed=" + summary.shimmed(), NamedTextColor.GRAY));
++
++        if (reports.isEmpty()) {
++            sender.sendMessage(Component.text("No plugin compatibility reports are cached yet.", NamedTextColor.YELLOW));
++            return true;
++        }
++
++        for (final Report report : reports.subList(fromIndex, toIndex)) {
++            sender.sendMessage(Component.text()
++                .append(Component.text(report.pluginName() + " ", NamedTextColor.WHITE))
++                .append(Component.text("v" + report.version(), NamedTextColor.GRAY))
++                .append(Component.text(" | ", NamedTextColor.DARK_GRAY))
++                .append(Component.text(report.classification().name(), classificationColor(report.classification())))
++                .append(Component.text(" | shim=", NamedTextColor.DARK_GRAY))
++                .append(Component.text(report.shimActive() ? "yes" : "no", report.shimActive() ? NamedTextColor.GREEN : NamedTextColor.GRAY))
++                .append(Component.text(" | family=", NamedTextColor.DARK_GRAY))
++                .append(Component.text(report.family(), NamedTextColor.AQUA))
++                .build());
++        }
++
++        return true;
++    }
++
++    private boolean executeReport(final CommandSender sender, final String[] args) {
++        if (args.length < 2) {
++            sender.sendMessage(Component.text("Usage: /silkmc report <plugin>", NamedTextColor.RED));
++            return false;
++        }
++        final String pluginName = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
++        final Report report = SilkPluginCompatibilityManager.report(pluginName);
++        if (report == null) {
++            sender.sendMessage(Component.text("No cached compatibility report was found for '" + pluginName + "'.", NamedTextColor.RED));
++            return true;
++        }
++
++        sender.sendMessage(Component.text("SilkMC compatibility report for " + report.pluginName(), NamedTextColor.AQUA, TextDecoration.BOLD));
++        sender.sendMessage(Component.text("version=" + report.version() + " classification=" + report.classification().name() + " family=" + report.family() + " shim=" + (report.shimActive() ? "yes" : "no"), NamedTextColor.GRAY));
++        sender.sendMessage(Component.text("nms-access=" + report.nmsAccessLevel().name() + " scanned-classes=" + report.scannedClassCount() + " override-applied=" + (report.overrideApplied() ? "yes" : "no") + " force-load=" + (report.forceLoad() ? "yes" : "no"), NamedTextColor.GRAY));
++        if (report.overrideApplied()) {
++            sender.sendMessage(Component.text("override-reason=" + (report.overrideReason().isBlank() ? "(none provided)" : report.overrideReason()), NamedTextColor.GRAY));
++        }
++        sender.sendMessage(Component.text("Reasons:", NamedTextColor.YELLOW));
++        for (final String reason : report.reasons()) {
++            sender.sendMessage(Component.text(" - " + reason, NamedTextColor.WHITE));
++        }
++        sender.sendMessage(Component.text("Technical details:", NamedTextColor.YELLOW));
++        for (final String detail : report.technicalDetails()) {
++            sender.sendMessage(Component.text(" - " + detail, NamedTextColor.GRAY));
++        }
++        return true;
++    }
++
++    private boolean executeReload(final CommandSender sender) {
++        SilkPluginCompatibility.reloadConfiguration();
++        sender.sendMessage(Component.text("Reloaded silkmc-compatibility.yml and silkmc-plugin-overrides.yml. Cached plugin classifications were not re-scanned.", NamedTextColor.GREEN));
++        return true;
++    }
++
++    private static NamedTextColor classificationColor(final SilkPluginCompatibilityManager.Classification classification) {
++        return switch (classification) {
++            case SAFE -> NamedTextColor.GREEN;
++            case COMPATIBLE -> NamedTextColor.AQUA;
++            case UNKNOWN -> NamedTextColor.YELLOW;
++            case UNSAFE -> NamedTextColor.RED;
++        };
++    }
++}
