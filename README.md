@@ -14,7 +14,7 @@ It preserves Folia's regional multithreading architecture while presenting SilkM
 ## Current state
 
 - Upstream baseline: Folia `26.1.2` (`ver/26.1.x`, synced May 17, 2026)
-- Project stage: `v0.1.0-alpha`
+- Project stage: `v0.1.5-alpha`
 - Java toolchain: JDK 25
 - Build system: Gradle + Paperweight patch workflow
 
@@ -74,7 +74,7 @@ The plain `silkmc-server` jar is a module artifact and is not intended to be lau
 - [Compatibility Testing](docs/testing/compatibility-matrix.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Upstream and Attribution](docs/development/upstream.md)
-- [Alpha Release Notes](docs/releases/v0.1.0-alpha.md)
+- [Alpha Release Notes](docs/releases/v0.1.5-alpha.md)
 
 ## Attribution
 
