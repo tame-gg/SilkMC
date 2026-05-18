@@ -26,19 +26,19 @@ public final class SilkPluginCompatibility {
     }
 
     public static void enforce(final PaperPluginMeta meta) {
-        enforce(meta.getDisplayName(), meta.isFoliaSupported());
+        enforce(meta.getDisplayName(), meta.isSilkSupported() || meta.isFoliaSupported());
     }
 
     public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
         try {
-            enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
+            enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
         } catch (final RuntimeException ex) {
             throw new InvalidPluginException(ex.getMessage(), ex);
         }
     }
 
     public static void enforceRuntime(final PluginDescriptionFile descriptionFile) {
-        enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
+        enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
     }
 
     public static void logStatus(final Logger logger) {

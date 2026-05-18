@@ -18,7 +18,10 @@ SilkMC keeps Folia's regional multithreading model as the core execution archite
 
 ## SilkMC additions
 
-- compatibility policy for unmarked plugins
+- compatibility policy for unmarked plugins (warn vs strict)
+- scheduler bridging: legacy Bukkit sync tasks route to the Global Region Scheduler
+- teleport bridging: legacy sync teleport routes to `teleportAsync` when safe
+- thread-context helpers for plugin survivability
 - compatibility-focused documentation and migration guidance
-- configurable compatibility modes
+- configurable compatibility modes via `silkmc-compatibility.yml`
 - release and benchmarking scaffolding for repeatable validation

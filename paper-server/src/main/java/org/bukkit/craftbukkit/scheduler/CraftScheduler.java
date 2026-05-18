@@ -17,8 +17,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntUnaryOperator;
 import java.util.logging.Level;
-import org.bukkit.Bukkit;
-import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
 import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -74,7 +72,6 @@ public class CraftScheduler implements BukkitScheduler {
      * Tail of a linked-list. AtomicReference only matters when adding to queue
      */
     private final AtomicReference<CraftTask> tail = new AtomicReference<CraftTask>(this.head);
-    private final ConcurrentHashMap<Integer, LegacyBridgedTask> bridgedTasks = new ConcurrentHashMap<>();
     /**
      * Main thread logic only
      */
@@ -267,10 +264,6 @@ public class CraftScheduler implements BukkitScheduler {
         if (taskId <= 0) {
             return;
         }
-        final LegacyBridgedTask bridgedTask = this.bridgedTasks.remove(taskId);
-        if (bridgedTask != null) {
-            bridgedTask.cancel();
-        }
         // Paper start
         if (!this.isAsyncScheduler) {
             this.asyncScheduler.cancelTask(taskId);
@@ -318,11 +311,6 @@ public class CraftScheduler implements BukkitScheduler {
     @Override
     public void cancelTasks(final Plugin plugin) {
         Preconditions.checkArgument(plugin != null, "Cannot cancel tasks of null plugin");
-        for (final LegacyBridgedTask bridgedTask : this.bridgedTasks.values()) {
-            if (bridgedTask.task.getOwner().equals(plugin)) {
-                bridgedTask.cancel();
-            }
-        }
         // Paper start
         if (!this.isAsyncScheduler) {
             this.asyncScheduler.cancelTasks(plugin);
@@ -367,10 +355,6 @@ public class CraftScheduler implements BukkitScheduler {
 
     @Override
     public boolean isCurrentlyRunning(final int taskId) {
-        final LegacyBridgedTask bridgedTask = this.bridgedTasks.get(taskId);
-        if (bridgedTask != null) {
-            return bridgedTask.running;
-        }
         // Paper start
         if (!this.isAsyncScheduler) {
             if (this.asyncScheduler.isCurrentlyRunning(taskId)) {
@@ -395,10 +379,6 @@ public class CraftScheduler implements BukkitScheduler {
     public boolean isQueued(final int taskId) {
         if (taskId <= 0) {
             return false;
-        }
-        final LegacyBridgedTask bridgedTask = this.bridgedTasks.get(taskId);
-        if (bridgedTask != null) {
-            return bridgedTask.isQueued();
         }
         // Paper start
         if (!this.isAsyncScheduler && this.asyncScheduler.isQueued(taskId)) {
@@ -457,11 +437,6 @@ public class CraftScheduler implements BukkitScheduler {
         for (final CraftTask task : truePending) {
             if (task.getPeriod() >= CraftTask.NO_REPEATING && !pending.contains(task)) {
                 pending.add(task);
-            }
-        }
-        for (final LegacyBridgedTask bridgedTask : this.bridgedTasks.values()) {
-            if (bridgedTask.isQueued() && !pending.contains(bridgedTask.task)) {
-                pending.add(bridgedTask.task);
             }
         }
         // Paper start
@@ -539,27 +514,19 @@ public class CraftScheduler implements BukkitScheduler {
     }
 
     protected CraftTask handle(final CraftTask task, final long delay) { // Paper
+        // Folia start - region threading
+        // SilkMC start - scheduler bridging
+        if (task.isSync()) {
+            return SilkSchedulerBridge.handleSyncTask(this, task, delay);
+        }
+        // SilkMC end - scheduler bridging
+        // Folia end - region threading
+        // Paper start
         if (!this.isAsyncScheduler && !task.isSync()) {
             this.asyncScheduler.handle(task, delay);
             return task;
         }
-        if (!this.isAsyncScheduler) {
-            final org.bukkit.Server server = Bukkit.getServer();
-            if (server == null) {
-                throw new IllegalStateException("Cannot schedule legacy sync task before server bootstrap");
-            }
-            final long firstRun = Math.max(1L, delay);
-            final LegacyBridgedTask bridge = new LegacyBridgedTask(task, true);
-            final io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduledTask;
-            if (task.getPeriod() > 0L) {
-                scheduledTask = server.getGlobalRegionScheduler().runAtFixedRate(task.getOwner(), ignored -> bridge.execute(), firstRun, task.getPeriod());
-            } else {
-                scheduledTask = server.getGlobalRegionScheduler().runDelayed(task.getOwner(), ignored -> bridge.execute(), firstRun);
-            }
-            bridge.bind(scheduledTask);
-            this.bridgedTasks.put(task.getTaskId(), bridge);
-            return task;
-        }
+        // Paper end
         task.setNextRun(this.currentTick + delay);
         this.addTask(task);
         return task;
@@ -578,89 +545,8 @@ public class CraftScheduler implements BukkitScheduler {
         int id;
         do {
             id = this.ids.updateAndGet(CraftScheduler.INCREMENT_IDS);
-        } while (this.runners.containsKey(id) || this.bridgedTasks.containsKey(id)); // Avoid generating duplicate IDs
+        } while (this.runners.containsKey(id)); // Avoid generating duplicate IDs
         return id;
-    }
-
-    private final class LegacyBridgedTask {
-
-        private final CraftTask task;
-        private final boolean sync;
-        private volatile io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduledTask;
-        private volatile boolean running;
-
-        private LegacyBridgedTask(final CraftTask task, final boolean sync) {
-            this.task = task;
-            this.sync = sync;
-        }
-
-        private void bind(final io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduledTask) {
-            this.scheduledTask = scheduledTask;
-        }
-
-        private void execute() {
-            if (this.task.getPeriod() < CraftTask.NO_REPEATING) {
-                CraftScheduler.this.bridgedTasks.remove(this.task.getTaskId(), this);
-                return;
-            }
-            this.running = true;
-            if (this.sync) {
-                CraftScheduler.this.currentTask = this.task;
-            }
-            try {
-                this.task.run();
-            } catch (final Throwable throwable) {
-                final SilkPluginCompatibility.Failure compatibilityFailure = SilkPluginCompatibility.describeTaskFailure(
-                    this.task.getOwner(),
-                    "legacy scheduler task",
-                    throwable
-                );
-                if (compatibilityFailure != null && SilkPluginCompatibility.shouldDisableIncompatiblePlugins()) {
-                    SilkPluginCompatibility.logFailure(Bukkit.getServer().getLogger(), compatibilityFailure, throwable);
-                    Bukkit.getServer().getPluginManager().disablePlugin(this.task.getOwner());
-                    this.task.cancel0();
-                    return;
-                }
-                final String logMessage = String.format(
-                    "Task #%s for %s generated an exception",
-                    this.task.getTaskId(),
-                    this.task.getOwner().getDescription().getFullName());
-                this.task.getOwner().getLogger().log(Level.WARNING, logMessage, throwable);
-                org.bukkit.Bukkit.getServer().getPluginManager().callEvent(
-                    new com.destroystokyo.paper.event.server.ServerExceptionEvent(
-                        new com.destroystokyo.paper.exception.ServerSchedulerException(logMessage, throwable, this.task)
-                    )
-                );
-            } finally {
-                if (this.sync) {
-                    CraftScheduler.this.currentTask = null;
-                }
-                this.running = false;
-                if (this.task.getPeriod() <= CraftTask.NO_REPEATING) {
-                    CraftScheduler.this.bridgedTasks.remove(this.task.getTaskId(), this);
-                }
-            }
-        }
-
-        private void cancel() {
-            this.task.cancel0();
-            final io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduledTask = this.scheduledTask;
-            if (scheduledTask != null) {
-                scheduledTask.cancel();
-            }
-            CraftScheduler.this.bridgedTasks.remove(this.task.getTaskId(), this);
-        }
-
-        private boolean isQueued() {
-            final io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduledTask = this.scheduledTask;
-            if (scheduledTask == null) {
-                return false;
-            }
-            return switch (scheduledTask.getExecutionState()) {
-                case IDLE, RUNNING, CANCELLED_RUNNING -> true;
-                case FINISHED, CANCELLED -> false;
-            };
-        }
     }
 
     void parsePending() { // Paper

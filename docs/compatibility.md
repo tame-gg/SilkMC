@@ -8,7 +8,8 @@ SilkMC is designed to be more forgiving than upstream Folia without hiding corre
 - `folia-supported: true` is still accepted.
 - Unmarked plugins can load in warning mode.
 - Servers can switch back to strict enforcement when needed.
-- Legacy Bukkit scheduler calls are bridged where SilkMC can map them safely.
+- Legacy Bukkit scheduler calls (`runTask`, `runTaskLater`, `runTaskTimer`, `callSyncMethod`) are bridged to the Global Region Scheduler.
+- Legacy synchronous `Entity.teleport()` and `Player.teleport()` are bridged to `teleportAsync` when on the owning region; cross-region sync teleports warn and return optimistically.
 
 ## Modes
 

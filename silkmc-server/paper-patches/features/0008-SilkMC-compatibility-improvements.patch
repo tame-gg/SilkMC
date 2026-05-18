@@ -1,0 +1,594 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kyle <kylematthewglenn@gmail.com>
+Date: Mon, 18 May 2026 14:32:11 -0500
+Subject: [PATCH] SilkMC compatibility improvements
+
+
+diff --git a/src/main/java/com/destroystokyo/paper/Metrics.java b/src/main/java/com/destroystokyo/paper/Metrics.java
+index 08745a35b1ce8cc56d970472088de3cd17b9e43a..32a2e7ff645b5cca596e7869438e193746c8755d 100644
+--- a/src/main/java/com/destroystokyo/paper/Metrics.java
++++ b/src/main/java/com/destroystokyo/paper/Metrics.java
+@@ -593,7 +593,7 @@ public class Metrics {
+             boolean logFailedRequests = config.getBoolean("logFailedRequests", false);
+             // Only start Metrics, if it's enabled in the config
+             if (config.getBoolean("enabled", true)) {
+-                Metrics metrics = new Metrics("Folia", serverUUID, logFailedRequests, Bukkit.getLogger()); // Folia - we have our own bstats page
++                Metrics metrics = new Metrics("SilkMC", serverUUID, logFailedRequests, Bukkit.getLogger()); // SilkMC - bstats page
+ 
+                 metrics.addCustomChart(new Metrics.SimplePie("minecraft_version", () -> {
+                     String minecraftVersion = Bukkit.getVersion();
+@@ -607,11 +607,11 @@ public class Metrics {
+                 final String implVersion = org.bukkit.craftbukkit.Main.class.getPackage().getImplementationVersion();
+                 if (implVersion != null) {
+                     final String buildOrHash = implVersion.substring(implVersion.lastIndexOf('-') + 1);
+-                    paperVersion = "git-Folia-%s-%s".formatted(Bukkit.getServer().getMinecraftVersion(), buildOrHash); // Folia - we have our own bstats page
++                    paperVersion = "git-SilkMC-%s-%s".formatted(Bukkit.getServer().getMinecraftVersion(), buildOrHash); // SilkMC - bstats page
+                 } else {
+                     paperVersion = "unknown";
+                 }
+-                metrics.addCustomChart(new Metrics.SimplePie("folia_version", () -> paperVersion)); // Folia - we have our own bstats page
++                metrics.addCustomChart(new Metrics.SimplePie("silkmc_version", () -> paperVersion)); // SilkMC - bstats page
+ 
+                 metrics.addCustomChart(new Metrics.DrilldownPie("java_version", () -> {
+                     Map<String, Map<String, Integer>> map = new HashMap<>();
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201c24adadc 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -40,8 +40,8 @@ public class PaperVersionFetcher implements VersionFetcher {
+     private static final ComponentLogger COMPONENT_LOGGER = ComponentLogger.logger(LogManager.getRootLogger().getName());
+     private static final int DISTANCE_ERROR = -1;
+     private static final int DISTANCE_UNKNOWN = -2;
+-    private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads/folia"; // Folia
+-    private static final String REPOSITORY = "PaperMC/Folia"; // Folia
++    private static final String DOWNLOAD_PAGE = "https://github.com/tame-gg/SilkMC/releases"; // SilkMC
++    private static final String REPOSITORY = "tame-gg/SilkMC"; // SilkMC
+     private static final ServerBuildInfo BUILD_INFO = ServerBuildInfo.buildInfo();
+     private static final String USER_AGENT = BUILD_INFO.brandName() + "/" + BUILD_INFO.asString(VERSION_SIMPLE) + " (https://papermc.io)";
+     private static final Gson GSON = new Gson();
+@@ -139,7 +139,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+         final String currentVersion = PaperVersionFetcher.BUILD_INFO.minecraftVersionId();
+ 
+         try {
+-            final URL versionsUrl = URI.create("https://fill.papermc.io/v3/projects/folia").toURL(); // Folia
++            final URL versionsUrl = URI.create("https://fill.papermc.io/v3/projects/silkmc").toURL(); // SilkMC
+             final HttpURLConnection connection = (HttpURLConnection) versionsUrl.openConnection();
+             connection.setConnectTimeout(5000);
+             connection.setReadTimeout(5000);
+@@ -161,7 +161,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+                     }
+ 
+                     try {
+-                        final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/folia/versions/" + latestVersion + "/builds/latest").toURL(); // Folia
++                        final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/silkmc/versions/" + latestVersion + "/builds/latest").toURL(); // SilkMC
+                         final HttpURLConnection connection2 = (HttpURLConnection) buildsUrl.openConnection();
+                         connection2.setConnectTimeout(5000);
+                         connection2.setReadTimeout(5000);
+@@ -194,7 +194,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+ 
+     private static int fetchDistanceFromSiteApi(final int jenkinsBuild) {
+         try {
+-            final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/folia/versions/" + PaperVersionFetcher.BUILD_INFO.minecraftVersionId() + "/builds").toURL(); // Folia
++            final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/silkmc/versions/" + PaperVersionFetcher.BUILD_INFO.minecraftVersionId() + "/builds").toURL(); // SilkMC
+             final HttpURLConnection connection = (HttpURLConnection) buildsUrl.openConnection();
+             connection.setConnectTimeout(5000);
+             connection.setReadTimeout(5000);
+diff --git a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
+index facccecb601c3721af24b47752192facfb5cdde2..a53cbf209d0411bd4e4fa2548870549bd6c6fae3 100644
+--- a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
++++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
+@@ -26,19 +26,19 @@ public final class SilkPluginCompatibility {
+     }
+ 
+     public static void enforce(final PaperPluginMeta meta) {
+-        enforce(meta.getDisplayName(), meta.isFoliaSupported());
++        enforce(meta.getDisplayName(), meta.isSilkSupported() || meta.isFoliaSupported());
+     }
+ 
+     public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
+         try {
+-            enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
++            enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
+         } catch (final RuntimeException ex) {
+             throw new InvalidPluginException(ex.getMessage(), ex);
+         }
+     }
+ 
+     public static void enforceRuntime(final PluginDescriptionFile descriptionFile) {
+-        enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
++        enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
+     }
+ 
+     public static void logStatus(final Logger logger) {
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index 10a0be7a4db1a51579d113d279af7a9effe7f438..09d8d7defb2542b2074d37b7936b9b000fa222bf 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -42,9 +42,9 @@ public record ServerBuildInfoImpl(
+         this(
+             getManifestAttribute(manifest, ATTRIBUTE_BRAND_ID)
+                 .map(Key::key)
+-                .orElse(Key.key("papermc", "folia")), // Folia
++                .orElse(Key.key("gg.tame", "silkmc")), // SilkMC
+             getManifestAttribute(manifest, ATTRIBUTE_BRAND_NAME)
+-                .orElse("Folia"), // Folia
++                .orElse("SilkMC"), // SilkMC
+             SharedConstants.getCurrentVersion().id(),
+             SharedConstants.getCurrentVersion().name(),
+             getManifestAttribute(manifest, ATTRIBUTE_BUILD_NUMBER)
+diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
+index 578102113c2034ed220a4753ee5b69e0270321ce..e3e5b73f835dbcb4e3721e11a50879b0f01e6450 100644
+--- a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
++++ b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
+@@ -13,6 +13,7 @@ import io.papermc.paper.plugin.provider.classloader.PaperClassLoaderStorage;
+ import io.papermc.paper.plugin.provider.source.DirectoryProviderSource;
+ import io.papermc.paper.plugin.provider.source.FileArrayProviderSource;
+ import io.papermc.paper.plugin.provider.source.FileProviderSource;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
+ import java.io.File;
+ import org.bukkit.Bukkit;
+ import org.bukkit.Server;
+@@ -204,13 +205,21 @@ class PaperPluginInstanceManager {
+             } // Paper
+ 
+             try {
++                SilkPluginCompatibility.beginLifecycle(jPlugin, "startup");
+                 jPlugin.setEnabled(true);
+             } catch (Throwable ex) {
+-                this.server.getLogger().log(Level.SEVERE, "Error occurred while enabling " + plugin.getPluginMeta().getDisplayName() + " (Is it up to date?)", ex);
++                final SilkPluginCompatibility.Failure compatibilityFailure = SilkPluginCompatibility.describeLifecycleFailure(jPlugin, ex);
++                if (compatibilityFailure != null && SilkPluginCompatibility.shouldDisableIncompatiblePlugins()) {
++                    SilkPluginCompatibility.logFailure(this.server.getLogger(), compatibilityFailure, ex);
++                } else {
++                    this.server.getLogger().log(Level.SEVERE, "Error occurred while enabling " + plugin.getPluginMeta().getDisplayName() + " (Is it up to date?)", ex);
++                }
+                 // Paper start - Disable plugins that fail to load
+                 this.server.getPluginManager().disablePlugin(jPlugin);
+                 return;
+                 // Paper end
++            } finally {
++                SilkPluginCompatibility.endLifecycle();
+             }
+ 
+             // Perhaps abort here, rather than continue going, but as it stands,
+@@ -248,18 +257,6 @@ class PaperPluginInstanceManager {
+             // tries to print after it's source has unloaded (i.e., Guice enhanced errors)
+             this.flushAsyncAppenders();
+ 
+-            ClassLoader classLoader = plugin.getClass().getClassLoader();
+-            if (classLoader instanceof ConfiguredPluginClassLoader configuredPluginClassLoader) {
+-                try {
+-                    configuredPluginClassLoader.close();
+-                } catch (IOException ex) {
+-                    this.server.getLogger().log(Level.WARNING, "Error closing the classloader for '" + pluginName + "'", ex); // Paper - log exception
+-                }
+-                // Remove from the classloader pool inorder to prevent plugins from trying
+-                // to access classes
+-                PaperClassLoaderStorage.instance().unregisterClassloader(configuredPluginClassLoader);
+-            }
+-
+         } catch (Throwable ex) {
+             this.handlePluginException("Error occurred (in the plugin loader) while disabling "
+                 + pluginName + " (Is it up to date?)", ex, plugin); // Paper
+@@ -324,6 +321,16 @@ class PaperPluginInstanceManager {
+             this.handlePluginException("Error occurred (in the plugin loader) while removing chunk tickets for " + pluginName + " (Is it up to date?)", ex, plugin); // Paper
+         }
+ 
++        final ClassLoader classLoader = plugin.getClass().getClassLoader();
++        if (classLoader instanceof ConfiguredPluginClassLoader configuredPluginClassLoader) {
++            try {
++                configuredPluginClassLoader.close();
++            } catch (IOException ex) {
++                this.server.getLogger().log(Level.WARNING, "Error closing the classloader for '" + pluginName + "'", ex);
++            }
++            PaperClassLoaderStorage.instance().unregisterClassloader(configuredPluginClassLoader);
++        }
++
+     }
+ 
+     private void handlePluginException(String msg, Throwable ex, Plugin plugin) {
+diff --git a/src/main/java/io/papermc/paper/plugin/provider/configuration/PaperPluginMeta.java b/src/main/java/io/papermc/paper/plugin/provider/configuration/PaperPluginMeta.java
+index fb7c6621e2805f4339c255f6c2e02c55ff4c502e..f3aa71868fc3b90cef4b7cf34a5f5764036a857f 100644
+--- a/src/main/java/io/papermc/paper/plugin/provider/configuration/PaperPluginMeta.java
++++ b/src/main/java/io/papermc/paper/plugin/provider/configuration/PaperPluginMeta.java
+@@ -65,6 +65,7 @@ public class PaperPluginMeta implements PluginMeta {
+     @Required
+     private ApiVersion apiVersion;
+     private boolean foliaSupported = false; // Folia
++    private boolean silkSupported = false; // SilkMC
+ 
+     private Map<PluginDependencyLifeCycle, Map<String, DependencyConfiguration>> dependencies = new EnumMap<>(PluginDependencyLifeCycle.class);
+ 
+@@ -258,6 +259,12 @@ public class PaperPluginMeta implements PluginMeta {
+         return this.foliaSupported;
+     }
+     // Folia end
++    // SilkMC start - silk-supported metadata
++    @Override
++    public boolean isSilkSupported() {
++        return this.silkSupported;
++    }
++    // SilkMC end - silk-supported metadata
+ 
+     @Override
+     public @NotNull List<String> getProvidedPlugins() {
+diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
+index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..bdb85fcdbd67d59b1282544ad9ea37c333310dc2 100644
+--- a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
++++ b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
+@@ -25,9 +25,9 @@ class PaperPluginProviderFactory implements PluginTypeFactory<PaperPluginParent,
+     @Override
+     public PaperPluginParent build(JarFile file, PaperPluginMeta configuration, Path source) {
+         // Folia start - block plugins not marked as supported
+-        if (!configuration.isFoliaSupported()) {
+-            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
+-        }
++        // SilkMC start - compatibility policy
++        gg.tame.silkmc.server.compat.SilkPluginCompatibility.enforce(configuration);
++        // SilkMC end - compatibility policy
+         // Folia end - block plugins not marked as supported
+         Logger jul = PaperPluginLogger.getLogger(configuration);
+         ComponentLogger logger = ComponentLogger.logger(jul.getName());
+diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
+index 6ef0042a355c65262bdb89dcf151bd644653216d..62494de82c0dbd2f464c08e36f202814efa756f0 100644
+--- a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
++++ b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
+@@ -27,9 +27,9 @@ class SpigotPluginProviderFactory implements PluginTypeFactory<SpigotPluginProvi
+     @Override
+     public SpigotPluginProvider build(JarFile file, PluginDescriptionFile configuration, Path source) throws InvalidDescriptionException {
+         // Folia start - block plugins not marked as supported
+-        if (!configuration.isFoliaSupported()) {
+-            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
+-        }
++        // SilkMC start - compatibility policy
++        gg.tame.silkmc.server.compat.SilkPluginCompatibility.enforceRuntime(configuration);
++        // SilkMC end - compatibility policy
+         // Folia end - block plugins not marked as supported
+         // Copied from SimplePluginManager#loadPlugins
+         // Spigot doesn't validate the name when the config is created, and instead when the plugin is loaded.
+diff --git a/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaAsyncScheduler.java b/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaAsyncScheduler.java
+index a1c153650b9146a245bf61ed3e89d407065da077..c5761b3bfba619dcb4a3f49779ba4072d2d84bdf 100644
+--- a/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaAsyncScheduler.java
++++ b/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaAsyncScheduler.java
+@@ -1,6 +1,7 @@
+ package io.papermc.paper.threadedregions.scheduler;
+ 
+ import com.mojang.logging.LogUtils;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
+ import org.bukkit.plugin.IllegalPluginAccessException;
+ import org.bukkit.plugin.Plugin;
+ import org.slf4j.Logger;
+@@ -32,7 +33,7 @@ public final class FoliaAsyncScheduler implements AsyncScheduler {
+             public Thread newThread(final Runnable run) {
+                 final Thread ret = new Thread(run);
+ 
+-                ret.setName("Folia Async Scheduler Thread #" + this.idGenerator.getAndIncrement());
++                ret.setName("SilkMC Async Scheduler Thread #" + this.idGenerator.getAndIncrement());
+                 ret.setPriority(Thread.NORM_PRIORITY - 1);
+                 ret.setUncaughtExceptionHandler((final Thread thread, final Throwable thr) -> {
+                     LOGGER.error("Uncaught exception in thread: " + thread.getName(), thr);
+@@ -48,7 +49,7 @@ public final class FoliaAsyncScheduler implements AsyncScheduler {
+         public Thread newThread(final Runnable run) {
+             final Thread ret = new Thread(run);
+ 
+-            ret.setName("Folia Async Scheduler Thread Timer");
++            ret.setName("SilkMC Async Scheduler Thread Timer");
+             ret.setPriority(Thread.NORM_PRIORITY + 1);
+             ret.setUncaughtExceptionHandler((final Thread thread, final Throwable thr) -> {
+                 LOGGER.error("Uncaught exception in thread: " + thread.getName(), thr);
+@@ -215,6 +216,15 @@ public final class FoliaAsyncScheduler implements AsyncScheduler {
+             try {
+                 this.run.accept(this);
+             } catch (final Throwable throwable) {
++                final SilkPluginCompatibility.Failure compatibilityFailure = SilkPluginCompatibility.describeTaskFailure(this.plugin, "async scheduler task", throwable);
++                if (compatibilityFailure != null && SilkPluginCompatibility.shouldDisableIncompatiblePlugins()) {
++                    SilkPluginCompatibility.logFailure(org.bukkit.Bukkit.getServer().getLogger(), compatibilityFailure, throwable);
++                    org.bukkit.Bukkit.getServer().getPluginManager().disablePlugin(this.plugin);
++                    if (repeating) {
++                        this.cancel();
++                    }
++                    return;
++                }
+                 this.plugin.getLogger().log(Level.WARNING, "Async task for " + this.plugin.getDescription().getFullName() + " generated an exception", throwable);
+             } finally {
+                 boolean removeFromTasks = false;
+diff --git a/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaGlobalRegionScheduler.java b/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaGlobalRegionScheduler.java
+index 14ffbcb66006878eacf310547dad53718f8308eb..55cb7c6ebdf3b0beb7849a8239676757895c78ea 100644
+--- a/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaGlobalRegionScheduler.java
++++ b/src/main/java/io/papermc/paper/threadedregions/scheduler/FoliaGlobalRegionScheduler.java
+@@ -1,6 +1,7 @@
+ package io.papermc.paper.threadedregions.scheduler;
+ 
+ import ca.spottedleaf.concurrentutil.util.ConcurrentUtil;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
+ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+ import org.bukkit.plugin.IllegalPluginAccessException;
+ import org.bukkit.plugin.Plugin;
+@@ -177,6 +178,15 @@ public class FoliaGlobalRegionScheduler implements GlobalRegionScheduler {
+             try {
+                 this.run.accept(this);
+             } catch (final Throwable throwable) {
++                final SilkPluginCompatibility.Failure compatibilityFailure = SilkPluginCompatibility.describeTaskFailure(this.plugin, "global region task", throwable);
++                if (compatibilityFailure != null && SilkPluginCompatibility.shouldDisableIncompatiblePlugins()) {
++                    SilkPluginCompatibility.logFailure(org.bukkit.Bukkit.getServer().getLogger(), compatibilityFailure, throwable);
++                    org.bukkit.Bukkit.getServer().getPluginManager().disablePlugin(this.plugin);
++                    if (repeating) {
++                        this.cancel();
++                    }
++                    return;
++                }
+                 this.plugin.getLogger().log(Level.WARNING, "Global task for " + this.plugin.getDescription().getFullName() + " generated an exception", throwable);
+             } finally {
+                 boolean reschedule = false;
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+index d43b1a6e6a8ac2a21b0a048e838115b0403170dd..4a25602d135f8b1661c2573ba44057db716b245a 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+@@ -305,32 +305,21 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
+ 
+     protected boolean teleport0(Location location, TeleportCause cause, TeleportFlag... flags) {
+         // Folia start - region threading
+-        if (true) {
+-            throw new UnsupportedOperationException("Must use teleportAsync while in region threading");
+-        }
+-        // Folia end - region threading
+-        Entity entity = this.getHandle();
+-        if (!entity.isAlive() || !entity.valid) {
+-            return false;
+-        }
+-
+-        final Set<net.minecraft.world.entity.Relative> relativeFlags = EnumSet.noneOf(net.minecraft.world.entity.Relative.class);
+-        for (final TeleportFlag flag : flags) {
+-            if (flag instanceof TeleportFlag.Relative relativeFlag) {
+-                relativeFlags.add(deltaRelativeToNMS(relativeFlag));
++        // SilkMC start - compatibility bridge for legacy sync teleport
++        try {
++            java.util.concurrent.CompletableFuture<Boolean> future = this.teleportAsync(location, cause, flags);
++            if (future.isDone()) {
++                return future.get();
++            } else {
++                org.bukkit.Bukkit.getLogger().warning("Plugin attempted cross-region synchronous teleport for " + this.getType() +
++                    ". This is unsafe on region-threaded servers. Use teleportAsync instead.");
++                return true;
+             }
++        } catch (Exception e) {
++            return false;
+         }
+-
+-        return this.entity.teleport(new TeleportTransition(
+-            ((CraftWorld) location.getWorld()).getHandle(),
+-            CraftLocation.toVec3(location),
+-            Vec3.ZERO,
+-            location.getYaw(),
+-            location.getPitch(),
+-            relativeFlags,
+-            TeleportTransition.DO_NOTHING,
+-            cause
+-        )) != null;
++        // SilkMC end - compatibility bridge for legacy sync teleport
++        // Folia end - region threading
+     }
+ 
+     public static net.minecraft.world.entity.Relative deltaRelativeToNMS(TeleportFlag.Relative apiFlag) {
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+index fbf31420cb83287c080c1832bccc167c81526563..11a10994f645d01acd5f21952bda8065fa2a66a1 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+@@ -1335,20 +1335,20 @@ public class CraftPlayer extends CraftHumanEntity implements Player, PluginMessa
+     @Override
+     protected boolean teleport0(Location location, org.bukkit.event.player.PlayerTeleportEvent.TeleportCause cause, io.papermc.paper.entity.TeleportFlag... flags) {
+         // Folia start - region threading
+-        if (true) {
+-            throw new UnsupportedOperationException("Must use teleportAsync while in region threading");
+-        }
+-        // Folia end - region threading
+-        if (this.getHandle().connection == null) {
+-            return false;
+-        }
+-        // Minecraft does not currently support teleporting players between worlds with passengers.
+-        // It causes them to be dismounted, and causes weird behavior.
+-        if (location.getWorld() != this.getWorld() && !this.getHandle().passengers.isEmpty()) {
++        // SilkMC start - compatibility bridge for legacy sync teleport
++        try {
++            java.util.concurrent.CompletableFuture<Boolean> future = this.teleportAsync(location, cause, flags);
++            if (future.isDone()) {
++                return future.get();
++            } else {
++                org.bukkit.Bukkit.getLogger().warning("Plugin attempted cross-region synchronous player teleport. Use teleportAsync instead.");
++                return true;
++            }
++        } catch (Exception e) {
+             return false;
+         }
+-
+-        return super.teleport0(location, cause, flags);
++        // SilkMC end - compatibility bridge for legacy sync teleport
++        // Folia end - region threading
+     }
+ 
+     @Override
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
+index c587adad59667f34bae8934a71a25f1b3061ffb2..23a6b4b16dcc1c7802b4ad73d903a18362c79efa 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
+@@ -25,6 +25,11 @@ class CraftFuture<T> extends CraftTask implements Future<T> {
+             return false;
+         }
+         this.setPeriod(CraftTask.CANCEL);
++        // SilkMC start - scheduler bridging
++        if (this.foliaTask != null) {
++            this.foliaTask.cancel();
++        }
++        // SilkMC end - scheduler bridging
+         return true;
+     }
+ 
+@@ -102,6 +107,11 @@ class CraftFuture<T> extends CraftTask implements Future<T> {
+             return false;
+         }
+         this.setPeriod(CraftTask.CANCEL);
++        // SilkMC start - scheduler bridging
++        if (this.foliaTask != null) {
++            this.foliaTask.cancel();
++        }
++        // SilkMC end - scheduler bridging
+         this.notifyAll();
+         return true;
+     }
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftScheduler.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftScheduler.java
+index c4dcddc4db02ed3641d05fae31ead7c13205f841..5b2a6dd784006d7ec07f8f85a673596d300905f7 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftScheduler.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftScheduler.java
+@@ -514,7 +514,13 @@ public class CraftScheduler implements BukkitScheduler {
+     }
+ 
+     protected CraftTask handle(final CraftTask task, final long delay) { // Paper
+-        if (true) throw new UnsupportedOperationException(); // Folia - region threading
++        // Folia start - region threading
++        // SilkMC start - scheduler bridging
++        if (task.isSync()) {
++            return SilkSchedulerBridge.handleSyncTask(this, task, delay);
++        }
++        // SilkMC end - scheduler bridging
++        // Folia end - region threading
+         // Paper start
+         if (!this.isAsyncScheduler && !task.isSync()) {
+             this.asyncScheduler.handle(task, delay);
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
+index 17680f112d0c7e7aee07e34477daa21ef2ddaa6f..935b31d39ea31be4837a3a36a95e54fcf4908b3b 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
+@@ -28,6 +28,9 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+     public final Consumer<BukkitTask> cTask;
+     private final Plugin plugin;
+     private final int id;
++    // SilkMC start - scheduler bridging
++    io.papermc.paper.threadedregions.scheduler.ScheduledTask foliaTask;
++    // SilkMC end - scheduler bridging
+     private final long createdAt = System.nanoTime();
+ 
+     CraftTask() {
+@@ -123,6 +126,12 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+         Bukkit.getScheduler().cancelTask(this.id);
+     }
+ 
++    // SilkMC start - scheduler bridging
++    void setFoliaTask(io.papermc.paper.threadedregions.scheduler.ScheduledTask task) {
++        this.foliaTask = task;
++    }
++    // SilkMC end - scheduler bridging
++
+     /**
+      * This method properly sets the status to cancelled, synchronizing when required.
+      *
+@@ -130,6 +139,11 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+      */
+     boolean cancel0() {
+         this.setPeriod(CraftTask.CANCEL);
++        // SilkMC start - scheduler bridging
++        if (this.foliaTask != null) {
++            this.foliaTask.cancel();
++        }
++        // SilkMC end - scheduler bridging
+         return true;
+     }
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7142b7e2da007c81a54dfefb4fe973e62c6058d
+--- /dev/null
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
+@@ -0,0 +1,59 @@
++package org.bukkit.craftbukkit.scheduler;
++
++import io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler;
++import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
++import org.bukkit.Bukkit;
++import org.bukkit.plugin.Plugin;
++
++public final class SilkSchedulerBridge {
++
++    private static final boolean ENABLED = true;
++
++    private SilkSchedulerBridge() {
++    }
++
++    static CraftTask handleSyncTask(CraftScheduler scheduler, CraftTask task, long delay) {
++        if (!ENABLED) {
++            throw new UnsupportedOperationException("Legacy sync scheduler is disabled.");
++        }
++
++        // CraftFuture is handled here too since it extends CraftTask and isSync() == true
++        Plugin plugin = task.getOwner();
++        long period = task.getPeriod();
++        boolean repeating = period > 0;
++
++        GlobalRegionScheduler global = Bukkit.getGlobalRegionScheduler();
++        ScheduledTask scheduledTask;
++        if (repeating) {
++            scheduledTask = global.runAtFixedRate(plugin, st -> {
++                if (task.isCancelled()) {
++                    return;
++                }
++                try {
++                    task.run();
++                } catch (Throwable ex) {
++                    plugin.getLogger().log(java.util.logging.Level.SEVERE,
++                        "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
++                }
++            }, delay, period);
++        } else {
++            scheduledTask = global.runDelayed(plugin, st -> {
++                if (task.isCancelled()) {
++                    return;
++                }
++                try {
++                    task.run();
++                } catch (Throwable ex) {
++                    plugin.getLogger().log(java.util.logging.Level.SEVERE,
++                        "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
++                }
++                // Remove from runners after execution for non-repeating tasks
++                scheduler.runners.remove(task.getTaskId());
++            }, delay);
++        }
++
++        task.setFoliaTask(scheduledTask);
++        scheduler.runners.put(task.getTaskId(), task);
++        return task;
++    }
++}
+diff --git a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
+index c414da018d73baa0a2612772f45899b642ea3a5d..2c7cee09d2162503941ddbc331e8eae4b44a9110 100644
+--- a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
++++ b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
+@@ -376,9 +376,9 @@ public final class CraftMagicNumbers implements UnsafeValues {
+         }
+ 
+         // Folia start - block plugins not marked as supported
+-        if (!descriptionFile.isFoliaSupported()) {
+-            throw new InvalidPluginException("Plugin " + descriptionFile.getFullName() + " is not marked as supporting regionised multithreading");
+-        }
++        // SilkMC start - compatibility policy
++        gg.tame.silkmc.server.compat.SilkPluginCompatibility.enforce(descriptionFile);
++        // SilkMC end - compatibility policy
+         // Folia end - block plugins not marked as supported
+ 
+         if (toCheck.isOlderThan(minimumVersion)) {
+diff --git a/src/test/java/io/papermc/paper/plugin/TestPluginMeta.java b/src/test/java/io/papermc/paper/plugin/TestPluginMeta.java
+index db9285c2ff0c805f5d9564b6e8520c33ea5bb65a..87a4848d3fe4712872ee96a37cc8b6fa0d8e2033 100644
+--- a/src/test/java/io/papermc/paper/plugin/TestPluginMeta.java
++++ b/src/test/java/io/papermc/paper/plugin/TestPluginMeta.java
+@@ -26,6 +26,12 @@ public class TestPluginMeta implements PluginMeta {
+         return true;
+     }
+     // Folia end - region threading
++    // SilkMC start - silk-supported metadata
++    @Override
++    public boolean isSilkSupported() {
++        return true;
++    }
++    // SilkMC end - silk-supported metadata
+ 
+     @Override
+     public @NotNull String getName() {

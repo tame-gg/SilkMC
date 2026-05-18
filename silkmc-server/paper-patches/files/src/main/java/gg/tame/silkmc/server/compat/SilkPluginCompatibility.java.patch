@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-@@ -1,0 +_,211 @@
+@@ -1,0 +_,215 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;

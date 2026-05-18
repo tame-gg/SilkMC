@@ -1,5 +1,17 @@
+# SilkMC Compatibility Configuration Example
+# This file is auto-generated on first startup if it does not exist.
+# You can copy it to your server root as silkmc-compatibility.yml.
+
 plugins:
+  # WARN = load unmarked plugins with a warning (default)
+  # REQUIRE_DECLARATION = refuse to load plugins without silk-supported or folia-supported
   unsupported-plugin-mode: WARN
+
+  # Log a warning when a plugin loads without explicit region-threading support metadata
   warn-on-load: true
+
+  # Automatically disable plugins that hit known unsafe compatibility boundaries
   disable-incompatible-plugins: true
+
+  # Include compatibility failure stack traces in logs
   log-compatibility-stacktraces: true

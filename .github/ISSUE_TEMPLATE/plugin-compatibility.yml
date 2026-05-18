@@ -1,0 +1,59 @@
+name: Plugin Compatibility Report
+description: Report how a specific Paper/Bukkit/Spigot plugin behaves on SilkMC.
+labels: [ "status: needs triage", "type: compatibility" ]
+body:
+  - type: input
+    attributes:
+      label: Plugin name
+      description: Name and version of the plugin.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Plugin source
+      description: Link to the plugin download or source repository.
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Compatibility status
+      options:
+        - Works without issues
+        - Works with warnings
+        - Crashes on startup
+        - Crashes at runtime
+        - Features partially broken
+        - Does not load
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Plugin metadata
+      description: Does the plugin declare `silk-supported: true` or `folia-supported: true`?
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Logs and errors
+      description: Paste relevant startup or runtime logs, stack traces, and warnings.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce the issue? Include commands, configurations, and in-game actions.
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: SilkMC version
+      description: Paste the full `/version` output.
+      value: |
+        ```
+        > version
+        [10:00:11 INFO]: Checking version, please wait...
+        [10:00:12 INFO]: This server is running SilkMC version git-SilkMC-"abcdef0" (MC: 26.1.2) (Implementing API version 26.1.2-R0.1-SNAPSHOT)
+        ```
+    validations:
+      required: true

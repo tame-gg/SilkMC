@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kyle <kylematthewglenn@gmail.com>
+Date: Mon, 18 May 2026 14:33:32 -0500
+Subject: [PATCH] SilkMC compatibility improvements
+
+
+diff --git a/src/main/java/io/papermc/paper/plugin/configuration/PluginMeta.java b/src/main/java/io/papermc/paper/plugin/configuration/PluginMeta.java
+index 0100108fd87268d225a60e51eaf87071b359ef6f..afe5b46b3b66304bb15afff0eb6283d372a0eba5 100644
+--- a/src/main/java/io/papermc/paper/plugin/configuration/PluginMeta.java
++++ b/src/main/java/io/papermc/paper/plugin/configuration/PluginMeta.java
+@@ -197,4 +197,10 @@ public interface PluginMeta extends Namespaced {
+      */
+     public boolean isFoliaSupported();
+     // Folia end - block plugins not marked as supported
++    // SilkMC start - silk-supported metadata
++    /**
++     * Returns whether the plugin has been marked to be compatible with SilkMC.
++     */
++    public boolean isSilkSupported();
++    // SilkMC end - silk-supported metadata
+ }
+diff --git a/src/main/java/org/bukkit/plugin/PluginDescriptionFile.java b/src/main/java/org/bukkit/plugin/PluginDescriptionFile.java
+index 4a5ac5193bee2107ddc65f37a39046f92e875350..7af40f070640218eb9424863fdb31153e5a3ee82 100644
+--- a/src/main/java/org/bukkit/plugin/PluginDescriptionFile.java
++++ b/src/main/java/org/bukkit/plugin/PluginDescriptionFile.java
+@@ -280,6 +280,15 @@ public final class PluginDescriptionFile implements io.papermc.paper.plugin.conf
+         return this.foliaSupported != null && this.foliaSupported.equalsIgnoreCase("true");
+     }
+     // Folia end - block plugins not marked as supported
++    // SilkMC start - silk-supported metadata
++    private String silkSupported;
++    private static final String SILK_SUPPORTED_KEY = "silk-supported";
++
++    @Override
++    public boolean isSilkSupported() {
++        return this.silkSupported != null && this.silkSupported.equalsIgnoreCase("true");
++    }
++    // SilkMC end - silk-supported metadata
+     // Paper start - oh my goddddd
+     /**
+      * @hidden
+@@ -1285,6 +1294,11 @@ public final class PluginDescriptionFile implements io.papermc.paper.plugin.conf
+             foliaSupported = map.get(FOLIA_SUPPORTED_KEY).toString();
+         }
+         // Folia end - block plugins not marked as supported
++        // SilkMC start - silk-supported metadata
++        if (map.get(SILK_SUPPORTED_KEY) != null) {
++            silkSupported = map.get(SILK_SUPPORTED_KEY).toString();
++        }
++        // SilkMC end - silk-supported metadata
+     }
+ 
+     @NotNull
+@@ -1366,6 +1380,11 @@ public final class PluginDescriptionFile implements io.papermc.paper.plugin.conf
+             map.put(FOLIA_SUPPORTED_KEY, foliaSupported);
+         }
+         // Folia end - block plugins not marked as supported
++        // SilkMC start - silk-supported metadata
++        if (silkSupported != null) {
++            map.put(SILK_SUPPORTED_KEY, silkSupported);
++        }
++        // SilkMC end - silk-supported metadata
+ 
+         return map;
+     }

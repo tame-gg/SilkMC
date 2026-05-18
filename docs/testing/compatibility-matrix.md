@@ -19,3 +19,5 @@ Initial validation targets for SilkMC:
 - no thread-ownership crashes during smoke tests
 - expected `/version` and branding output
 - world save/load integrity
+- legacy `runTask` / `runTaskTimer` calls execute without `UnsupportedOperationException`
+- legacy sync `teleport` calls succeed or warn gracefully
