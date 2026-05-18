@@ -1,0 +1,3 @@
+plugins:
+  unsupported-plugin-mode: WARN
+  warn-on-load: true

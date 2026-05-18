@@ -1,16 +1,17 @@
-name: Build
+name: Release
 
 on:
   push:
-    branches:
-      - main
-      - develop
-      - "release/**"
-      - "upstream/**"
-  pull_request:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,20 +26,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Configure git identity
-        run: git config --global user.email "actions@github.com" && git config --global user.name "GitHub Actions"
-
       - name: Apply patches
         run: ./gradlew applyAllPatches --stacktrace
 
-      - name: Build
+      - name: Build release artifacts
         run: ./gradlew build --stacktrace
 
-      - name: Upload jars
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          name: silkmc-build
-          path: |
+          files: |
             paper-server/build/libs/*.jar
             silkmc-server/build/libs/*.jar
+          body_path: docs/releases/v0.1.0-alpha.md

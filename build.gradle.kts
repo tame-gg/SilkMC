@@ -14,18 +14,18 @@ paperweight {
 
         patchFile {
             path = "paper-server/build.gradle.kts"
-            outputFile = file("folia-server/build.gradle.kts")
-            patchFile = file("folia-server/build.gradle.kts.patch")
+            outputFile = file("silkmc-server/build.gradle.kts")
+            patchFile = file("silkmc-server/build.gradle.kts.patch")
         }
         patchFile {
             path = "paper-api/build.gradle.kts"
-            outputFile = file("folia-api/build.gradle.kts")
-            patchFile = file("folia-api/build.gradle.kts.patch")
+            outputFile = file("silkmc-api/build.gradle.kts")
+            patchFile = file("silkmc-api/build.gradle.kts.patch")
         }
         patchDir("paperApi") {
             upstreamPath = "paper-api"
             excludes = setOf("build.gradle.kts")
-            patchesDir = file("folia-api/paper-patches")
+            patchesDir = file("silkmc-api/paper-patches")
             outputDir = file("paper-api")
         }
     }
@@ -77,8 +77,8 @@ subprojects {
 
     extensions.configure<PublishingExtension> {
         repositories {
-            maven("https://artifactory.papermc.io/artifactory/releases/") {
-                name = "paperReleases"
+            maven("https://maven.pkg.github.com/tame-gg/SilkMC") {
+                name = "githubPackages"
                 credentials(PasswordCredentials::class)
             }
         }

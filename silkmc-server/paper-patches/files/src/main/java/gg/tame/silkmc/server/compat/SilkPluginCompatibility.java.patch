@@ -1,0 +1,121 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
+@@ -1,0 +_,118 @@
++package gg.tame.silkmc.server.compat;
++
++import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
++import java.io.File;
++import java.io.IOException;
++import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.logging.Level;
++import java.util.logging.Logger;
++import org.bukkit.configuration.file.YamlConfiguration;
++import org.bukkit.plugin.InvalidPluginException;
++import org.bukkit.plugin.PluginDescriptionFile;
++
++public final class SilkPluginCompatibility {
++
++    private static final Logger LOGGER = Logger.getLogger("SilkMC");
++    private static final File CONFIG_FILE = new File("silkmc-compatibility.yml");
++    private static final Set<String> WARNED_PLUGINS = ConcurrentHashMap.newKeySet();
++    private static volatile Policy cachedPolicy;
++
++    private SilkPluginCompatibility() {
++    }
++
++    public static void enforce(final PaperPluginMeta meta) {
++        enforce(meta.getDisplayName(), meta.isFoliaSupported());
++    }
++
++    public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
++        try {
++            enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
++        } catch (final RuntimeException ex) {
++            throw new InvalidPluginException(ex.getMessage(), ex);
++        }
++    }
++
++    public static void enforceRuntime(final PluginDescriptionFile descriptionFile) {
++        enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
++    }
++
++    public static void logStatus(final Logger logger) {
++        final Policy policy = policy();
++        logger.info("SilkMC plugin compatibility policy: " + policy.mode.name().toLowerCase() + " for unmarked plugins");
++        if (policy.warnOnLoad) {
++            logger.info("SilkMC will warn when plugins load without explicit region-threading support metadata.");
++        }
++    }
++
++    private static void enforce(final String pluginName, final boolean supported) {
++        if (supported) {
++            return;
++        }
++
++        final Policy policy = policy();
++        final String message = "Plugin '" + pluginName + "' does not declare `silk-supported: true` (legacy `folia-supported: true` is also accepted).";
++
++        if (policy.mode == UnsupportedPluginMode.REQUIRE_DECLARATION) {
++            throw new RuntimeException(message + " SilkMC is configured to require explicit compatibility metadata.");
++        }
++
++        if (policy.warnOnLoad && WARNED_PLUGINS.add(pluginName)) {
++            LOGGER.warning(message + " Loading in compatibility warning mode; thread-safety issues may still occur.");
++        }
++    }
++
++    private static Policy policy() {
++        Policy local = cachedPolicy;
++        if (local != null) {
++            return local;
++        }
++        synchronized (SilkPluginCompatibility.class) {
++            local = cachedPolicy;
++            if (local == null) {
++                local = loadPolicy();
++                cachedPolicy = local;
++            }
++            return local;
++        }
++    }
++
++    private static Policy loadPolicy() {
++        final YamlConfiguration config = YamlConfiguration.loadConfiguration(CONFIG_FILE);
++
++        if (!CONFIG_FILE.exists()) {
++            config.set("plugins.unsupported-plugin-mode", "WARN");
++            config.set("plugins.warn-on-load", true);
++            saveConfig(config);
++        }
++
++        return new Policy(
++            UnsupportedPluginMode.from(config.getString("plugins.unsupported-plugin-mode", "WARN")),
++            config.getBoolean("plugins.warn-on-load", true)
++        );
++    }
++
++    private static void saveConfig(final YamlConfiguration config) {
++        try {
++            config.save(CONFIG_FILE);
++        } catch (final IOException ex) {
++            LOGGER.log(Level.WARNING, "Failed to write default SilkMC compatibility config to " + CONFIG_FILE.getAbsolutePath(), ex);
++        }
++    }
++
++    private record Policy(UnsupportedPluginMode mode, boolean warnOnLoad) {
++    }
++
++    private enum UnsupportedPluginMode {
++        WARN,
++        REQUIRE_DECLARATION;
++
++        private static UnsupportedPluginMode from(final String value) {
++            try {
++                return UnsupportedPluginMode.valueOf(value.trim().toUpperCase());
++            } catch (final IllegalArgumentException ex) {
++                return WARN;
++            }
++        }
++    }
++}

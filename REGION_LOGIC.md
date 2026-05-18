@@ -1,3 +1,5 @@
 # Region Logic
 
-This page has been moved to [the PaperMC documentation](https://docs.papermc.io/folia/reference/region-logic) site.
+SilkMC inherits its regional threading model from Folia and documents SilkMC-specific behavior in [docs/architecture.md](docs/architecture.md).
+
+For upstream implementation details and attribution, see [docs/development/upstream.md](docs/development/upstream.md).
