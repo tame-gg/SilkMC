@@ -9,5 +9,7 @@ Example values:
 Suggested startup:
 
 ```powershell
-java -Xms4G -Xmx4G -jar silkmc-server.jar nogui
+java -Xms4G -Xmx4G -jar silkmc-paperclip.jar nogui
 ```
+
+The `silkmc-server` module jar is not self-contained and should not be used as the end-user startup jar.

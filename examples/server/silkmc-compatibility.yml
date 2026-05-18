@@ -1,3 +1,5 @@
 plugins:
   unsupported-plugin-mode: WARN
   warn-on-load: true
+  disable-incompatible-plugins: true
+  log-compatibility-stacktraces: true

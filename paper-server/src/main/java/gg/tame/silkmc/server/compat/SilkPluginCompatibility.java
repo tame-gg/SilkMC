@@ -1,0 +1,215 @@
+package gg.tame.silkmc.server.compat;
+
+import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
+import java.io.File;
+import java.io.IOException;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.InvalidPluginException;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginDescriptionFile;
+
+public final class SilkPluginCompatibility {
+
+    private static final Logger LOGGER = Logger.getLogger("SilkMC");
+    private static final File CONFIG_FILE = new File("silkmc-compatibility.yml");
+    private static final Set<String> WARNED_PLUGINS = ConcurrentHashMap.newKeySet();
+    private static final ThreadLocal<LifecycleContext> ACTIVE_PLUGIN_LIFECYCLE = new ThreadLocal<>();
+    private static volatile Policy cachedPolicy;
+
+    private SilkPluginCompatibility() {
+    }
+
+    public static void enforce(final PaperPluginMeta meta) {
+        enforce(meta.getDisplayName(), meta.isFoliaSupported());
+    }
+
+    public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
+        try {
+            enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
+        } catch (final RuntimeException ex) {
+            throw new InvalidPluginException(ex.getMessage(), ex);
+        }
+    }
+
+    public static void enforceRuntime(final PluginDescriptionFile descriptionFile) {
+        enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
+    }
+
+    public static void logStatus(final Logger logger) {
+        final Policy policy = policy();
+        logger.info("SilkMC plugin compatibility policy: " + policy.mode.name().toLowerCase() + " for unmarked plugins");
+        if (policy.warnOnLoad) {
+            logger.info("SilkMC will warn when plugins load without explicit region-threading support metadata.");
+        }
+        if (policy.disableIncompatiblePlugins) {
+            logger.info("SilkMC will automatically disable plugins that hit known unsafe compatibility boundaries.");
+        }
+    }
+
+    public static void beginLifecycle(final Plugin plugin, final String phase) {
+        ACTIVE_PLUGIN_LIFECYCLE.set(new LifecycleContext(plugin, phase));
+    }
+
+    public static void endLifecycle() {
+        ACTIVE_PLUGIN_LIFECYCLE.remove();
+    }
+
+    public static Failure describeLifecycleFailure(final Plugin plugin, final Throwable throwable) {
+        return describeFailure(plugin, ACTIVE_PLUGIN_LIFECYCLE.get(), throwable);
+    }
+
+    public static Failure describeTaskFailure(final Plugin plugin, final String phase, final Throwable throwable) {
+        return describeFailure(plugin, new LifecycleContext(plugin, phase), throwable);
+    }
+
+    public static void logFailure(final Logger logger, final Failure failure, final Throwable throwable) {
+        final Policy policy = policy();
+        logger.severe("Disabling plugin '" + failure.pluginName() + "' during " + failure.phase()
+            + ": incompatible with SilkMC's compatibility guarantees.");
+        logger.warning(failure.operatorMessage());
+        if (policy.logCompatibilityStacktraces) {
+            logger.log(Level.WARNING, "Compatibility failure details for '" + failure.pluginName() + "'", throwable);
+        }
+    }
+
+    public static boolean shouldDisableIncompatiblePlugins() {
+        return policy().disableIncompatiblePlugins;
+    }
+
+    private static void enforce(final String pluginName, final boolean supported) {
+        if (supported) {
+            return;
+        }
+
+        final Policy policy = policy();
+        final String message = "Plugin '" + pluginName + "' does not declare `silk-supported: true` (legacy `folia-supported: true` is also accepted).";
+
+        if (policy.mode == UnsupportedPluginMode.REQUIRE_DECLARATION) {
+            throw new RuntimeException(message + " SilkMC is configured to require explicit compatibility metadata.");
+        }
+
+        if (policy.warnOnLoad && WARNED_PLUGINS.add(pluginName)) {
+            LOGGER.warning(message + " Loading in compatibility warning mode; thread-safety issues may still occur.");
+        }
+    }
+
+    private static Policy policy() {
+        Policy local = cachedPolicy;
+        if (local != null) {
+            return local;
+        }
+        synchronized (SilkPluginCompatibility.class) {
+            local = cachedPolicy;
+            if (local == null) {
+                local = loadPolicy();
+                cachedPolicy = local;
+            }
+            return local;
+        }
+    }
+
+    private static Policy loadPolicy() {
+        final YamlConfiguration config = YamlConfiguration.loadConfiguration(CONFIG_FILE);
+
+        if (!CONFIG_FILE.exists()) {
+            config.set("plugins.unsupported-plugin-mode", "WARN");
+            config.set("plugins.warn-on-load", true);
+            saveConfig(config);
+        }
+
+        return new Policy(
+            UnsupportedPluginMode.from(config.getString("plugins.unsupported-plugin-mode", "WARN")),
+            config.getBoolean("plugins.warn-on-load", true),
+            config.getBoolean("plugins.disable-incompatible-plugins", true),
+            config.getBoolean("plugins.log-compatibility-stacktraces", true)
+        );
+    }
+
+    private static void saveConfig(final YamlConfiguration config) {
+        try {
+            config.save(CONFIG_FILE);
+        } catch (final IOException ex) {
+            LOGGER.log(Level.WARNING, "Failed to write default SilkMC compatibility config to " + CONFIG_FILE.getAbsolutePath(), ex);
+        }
+    }
+
+    private static Failure describeFailure(final Plugin plugin, final LifecycleContext context, final Throwable throwable) {
+        if (plugin == null || throwable == null) {
+            return null;
+        }
+
+        final Throwable root = rootCause(throwable);
+        final String rawMessage = Objects.toString(root.getMessage(), throwable.getMessage());
+        final String message = rawMessage == null ? "" : rawMessage.toLowerCase(Locale.ROOT);
+        final String phase = context == null ? "runtime" : context.phase();
+
+        final String detail;
+        if (message.contains("thread failed main thread check")
+            || message.contains("cannot read world asynchronously")
+            || message.contains("cannot modify world asynchronously")
+            || message.contains("cannot retrieve chunk asynchronously")
+            || message.contains("cannot unload chunk asynchronously")
+            || message.contains("cannot refresh chunk asynchronously")) {
+            detail = "This plugin accessed world or chunk state from a compatibility context that SilkMC cannot safely remap to a region owner.";
+        } else if (message.contains("off of the global region")
+            || message.contains("not on any region")
+            || message.contains("no currently ticking region")) {
+            detail = "This plugin requires a global or region owner context that SilkMC cannot infer from legacy Bukkit/Paper calls.";
+        } else if (message.contains("must use teleportasync while in region threading")) {
+            detail = "This plugin expects synchronous teleport behavior, which SilkMC cannot safely emulate on a region-threaded server.";
+        } else if (message.contains("unexpected async task in the sync scheduler")
+            || message.contains("cannot schedule legacy sync task before server bootstrap")) {
+            detail = "This plugin depends on a legacy scheduler path that SilkMC could not safely bridge at runtime.";
+        } else {
+            return null;
+        }
+
+        return new Failure(
+            plugin.getPluginMeta().getDisplayName(),
+            phase,
+            detail + " Mark the plugin as incompatible, update it for SilkMC/Folia-style scheduling, or replace it with a region-aware alternative.",
+            root.getClass().getSimpleName() + (rawMessage == null || rawMessage.isBlank() ? "" : ": " + rawMessage)
+        );
+    }
+
+    private static Throwable rootCause(final Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private record LifecycleContext(Plugin plugin, String phase) {
+    }
+
+    public record Failure(String pluginName, String phase, String operatorMessage, String technicalSummary) {
+    }
+
+    private record Policy(
+        UnsupportedPluginMode mode,
+        boolean warnOnLoad,
+        boolean disableIncompatiblePlugins,
+        boolean logCompatibilityStacktraces
+    ) {
+    }
+
+    private enum UnsupportedPluginMode {
+        WARN,
+        REQUIRE_DECLARATION;
+
+        private static UnsupportedPluginMode from(final String value) {
+            try {
+                return UnsupportedPluginMode.valueOf(value.trim().toUpperCase());
+            } catch (final IllegalArgumentException ex) {
+                return WARN;
+            }
+        }
+    }
+}

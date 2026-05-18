@@ -34,11 +34,15 @@ jobs:
       - name: Build
         run: ./gradlew build --stacktrace
 
+      - name: Build runnable server jar
+        run: ./gradlew :silkmc-server:createPaperclipJar --stacktrace
+
       - name: Upload jars
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: silkmc-build
           path: |
-            paper-server/build/libs/*.jar
+            silkmc-server/build/libs/silkmc-paperclip-*.jar
+            silkmc-server/build/libs/silkmc-bundler-*.jar
             silkmc-server/build/libs/*.jar

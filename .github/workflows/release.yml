@@ -33,12 +33,13 @@ jobs:
         run: ./gradlew applyAllPatches --stacktrace
 
       - name: Build release artifacts
-        run: ./gradlew build --stacktrace
+        run: ./gradlew build :silkmc-server:createPaperclipJar --stacktrace
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            paper-server/build/libs/*.jar
+            silkmc-server/build/libs/silkmc-paperclip-*.jar
+            silkmc-server/build/libs/silkmc-bundler-*.jar
             silkmc-server/build/libs/*.jar
           body_path: docs/releases/v0.1.0-alpha.md

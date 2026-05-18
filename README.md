@@ -36,9 +36,16 @@ $env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot'
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 ./gradlew applyAllPatches
 ./gradlew build
+./gradlew :silkmc-server:createPaperclipJar
 ```
 
-The main server artifact is produced from the `silkmc-server` module after patch application.
+Use the runnable Paperclip-style server jar for local testing and releases:
+
+```powershell
+java -Xms4G -Xmx4G -jar .\silkmc-server\build\libs\silkmc-paperclip-26.1.2.local-SNAPSHOT.jar nogui
+```
+
+The plain `silkmc-server` jar is a module artifact and is not intended to be launched standalone.
 
 ## Repository layout
 
