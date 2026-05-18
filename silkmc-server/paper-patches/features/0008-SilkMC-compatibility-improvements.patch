@@ -498,11 +498,12 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..d7142b7e2da007c81a54dfefb4fe973e62c6058d
 --- /dev/null
 +++ b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,63 @@
 +package org.bukkit.craftbukkit.scheduler;
 +
 +import io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler;
 +import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
++import java.util.function.Consumer;
 +import org.bukkit.Bukkit;
 +import org.bukkit.plugin.Plugin;
 +
@@ -523,34 +524,36 @@ index 0000000000000000000000000000000000000000..d7142b7e2da007c81a54dfefb4fe973e
 +        long period = task.getPeriod();
 +        boolean repeating = period > 0;
 +
++        // Bukkit semantics: delay 0 means "next tick" and non-repeating tasks carry
++        // period 0. Folia's runDelayed/runAtFixedRate reject anything <= 0, so we
++        // route through run() for the immediate case and clamp tick values up to 1.
++        final long safeDelay = Math.max(delay, 1L);
++        final long safePeriod = Math.max(period, 1L);
++
 +        GlobalRegionScheduler global = Bukkit.getGlobalRegionScheduler();
++        final Consumer<ScheduledTask> body = st -> {
++            if (task.isCancelled()) {
++                return;
++            }
++            try {
++                task.run();
++            } catch (Throwable ex) {
++                plugin.getLogger().log(java.util.logging.Level.SEVERE,
++                    "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
++            }
++        };
++        final Consumer<ScheduledTask> oneShotBody = st -> {
++            body.accept(st);
++            scheduler.runners.remove(task.getTaskId());
++        };
++
 +        ScheduledTask scheduledTask;
 +        if (repeating) {
-+            scheduledTask = global.runAtFixedRate(plugin, st -> {
-+                if (task.isCancelled()) {
-+                    return;
-+                }
-+                try {
-+                    task.run();
-+                } catch (Throwable ex) {
-+                    plugin.getLogger().log(java.util.logging.Level.SEVERE,
-+                        "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
-+                }
-+            }, delay, period);
++            scheduledTask = global.runAtFixedRate(plugin, body, safeDelay, safePeriod);
++        } else if (delay <= 0L) {
++            scheduledTask = global.run(plugin, oneShotBody);
 +        } else {
-+            scheduledTask = global.runDelayed(plugin, st -> {
-+                if (task.isCancelled()) {
-+                    return;
-+                }
-+                try {
-+                    task.run();
-+                } catch (Throwable ex) {
-+                    plugin.getLogger().log(java.util.logging.Level.SEVERE,
-+                        "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
-+                }
-+                // Remove from runners after execution for non-repeating tasks
-+                scheduler.runners.remove(task.getTaskId());
-+            }, delay);
++            scheduledTask = global.runDelayed(plugin, oneShotBody, safeDelay);
 +        }
 +
 +        task.setFoliaTask(scheduledTask);

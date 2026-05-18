@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-@@ -1,0 +_,215 @@
+@@ -1,0 +_,218 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
@@ -167,7 +167,10 @@
 +        } else if (message.contains("must use teleportasync while in region threading")) {
 +            detail = "This plugin expects synchronous teleport behavior, which SilkMC cannot safely emulate on a region-threaded server.";
 +        } else if (message.contains("unexpected async task in the sync scheduler")
-+            || message.contains("cannot schedule legacy sync task before server bootstrap")) {
++            || message.contains("cannot schedule legacy sync task before server bootstrap")
++            || message.contains("delay ticks may not be")
++            || message.contains("period ticks may not be")
++            || message.contains("initial delay must be")) {
 +            detail = "This plugin depends on a legacy scheduler path that SilkMC could not safely bridge at runtime.";
 +        } else {
 +            return null;
