@@ -41,5 +41,5 @@ jobs:
           files: |
             silkmc-server/build/libs/silkmc-paperclip-*.jar
             silkmc-server/build/libs/silkmc-bundler-*.jar
-            silkmc-server/build/libs/*.jar
+            silkmc-server/build/libs/silkmc-server-*.jar
           body_path: docs/releases/v0.1.3-alpha.md
