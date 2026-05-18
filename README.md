@@ -72,6 +72,7 @@ The plain `silkmc-server` jar is a module artifact and is not intended to be lau
 - [Compatibility Guide](docs/compatibility.md)
 - [Plugin Migration Guide](docs/migration/plugin-developers.md)
 - [Compatibility Testing](docs/testing/compatibility-matrix.md)
+- [Plugin Compatibility Reports](docs/testing/plugin-compatibility-reports.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Upstream and Attribution](docs/development/upstream.md)
 - [Alpha Release Notes](docs/releases/v0.1.2-alpha.md)
