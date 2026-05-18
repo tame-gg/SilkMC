@@ -68,3 +68,14 @@ SilkMC currently classifies and disables plugins for known startup or task-time 
 - plugins that mutate cross-region state unsafely can still fail
 - some traditional Bukkit scheduler tasks still lack enough location or entity context for SilkMC to infer a safe owning region
 - some event ordering assumptions from traditional single-threaded servers remain impossible to preserve fully
+
+## Operator commands
+
+SilkMC registers `/silkmc` for operators with these subcommands:
+
+- `/silkmc status` for a one-line server and compatibility snapshot
+- `/silkmc plugins [page]` for cached plugin classifications
+- `/silkmc report <plugin>` for the full compatibility inspection report
+- `/silkmc reload` to reload `silkmc-compatibility.yml` and `silkmc-plugin-overrides.yml`
+
+`/silkmc reload` does not rescan plugin jars. It refreshes policy and override state only, so cached classification reports stay tied to the last pre-load inspection until the next restart or plugin load cycle.

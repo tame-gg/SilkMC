@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <koelss@users.noreply.github.com>
+Date: Mon, 18 May 2026 18:21:00 -0500
+Subject: [PATCH] SilkMC operator command
+
+diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
+index 3deca0b4e95609dc95376a86b5cbd525729a1031..6307b90a93b3fa8d697f6036bbcdc0dac5c0409e 100644
+--- a/src/main/java/io/papermc/paper/command/PaperCommands.java
++++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
+@@ -1,6 +1,7 @@
+ package io.papermc.paper.command;
+ 
+ import com.mojang.brigadier.tree.LiteralCommandNode;
++import gg.tame.silkmc.server.command.SilkMCCommand;
+ import io.papermc.paper.command.brigadier.CommandRegistrationFlag;
+ import io.papermc.paper.command.brigadier.CommandSourceStack;
+ import net.minecraft.server.MinecraftServer;
+@@ -26,6 +27,7 @@ public final class PaperCommands {
+         COMMANDS.put("mspt", new MSPTCommand("mspt"));
+         COMMANDS.put("tps", new io.papermc.paper.threadedregions.commands.CommandServerHealth()); // Folia - region threading
+         COMMANDS.put("profiler", new io.papermc.paper.threadedregions.commands.CommandProfiler()); // Folia - region threading - profiler
++        COMMANDS.put("silkmc", new SilkMCCommand());
+ 
+         COMMANDS.forEach((s, command) -> {
+             server.server.getCommandMap().register(s, "Paper", command);
