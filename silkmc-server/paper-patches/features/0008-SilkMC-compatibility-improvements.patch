@@ -495,10 +495,10 @@ index 17680f112d0c7e7aee07e34477daa21ef2ddaa6f..935b31d39ea31be4837a3a36a95e54fc
  
 diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d7142b7e2da007c81a54dfefb4fe973e62c6058d
+index 0000000000000000000000000000000000000000..ef0f1d6647d8118279e7a73372725b48302b2af1
 --- /dev/null
 +++ b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,62 @@
 +package org.bukkit.craftbukkit.scheduler;
 +
 +import io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler;
