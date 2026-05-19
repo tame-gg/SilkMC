@@ -73,33 +73,6 @@ index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201
              final HttpURLConnection connection = (HttpURLConnection) buildsUrl.openConnection();
              connection.setConnectTimeout(5000);
              connection.setReadTimeout(5000);
-diff --git a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-index facccecb601c3721af24b47752192facfb5cdde2..a53cbf209d0411bd4e4fa2548870549bd6c6fae3 100644
---- a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-+++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibility.java
-@@ -26,19 +26,19 @@ public final class SilkPluginCompatibility {
-     }
- 
-     public static void enforce(final PaperPluginMeta meta) {
--        enforce(meta.getDisplayName(), meta.isFoliaSupported());
-+        enforce(meta.getDisplayName(), meta.isSilkSupported() || meta.isFoliaSupported());
-     }
- 
-     public static void enforce(final PluginDescriptionFile descriptionFile) throws InvalidPluginException {
-         try {
--            enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
-+            enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
-         } catch (final RuntimeException ex) {
-             throw new InvalidPluginException(ex.getMessage(), ex);
-         }
-     }
- 
-     public static void enforceRuntime(final PluginDescriptionFile descriptionFile) {
--        enforce(descriptionFile.getFullName(), descriptionFile.isFoliaSupported());
-+        enforce(descriptionFile.getFullName(), descriptionFile.isSilkSupported() || descriptionFile.isFoliaSupported());
-     }
- 
-     public static void logStatus(final Logger logger) {
 diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
 index 10a0be7a4db1a51579d113d279af7a9effe7f438..09d8d7defb2542b2074d37b7936b9b000fa222bf 100644
 --- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
@@ -224,7 +197,7 @@ index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..bdb85fcdbd67d59b1282544ad9ea37c3
 -            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
 -        }
 +        // SilkMC start - compatibility manager
-+        gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.inspectAndEnforce(file, configuration);
++        gg.tame.silkmc.server.compat.SilkPluginCompatibility.inspectAndEnforce(source, configuration);
 +        // SilkMC end - compatibility manager
          // Folia end - block plugins not marked as supported
          Logger jul = PaperPluginLogger.getLogger(configuration);
@@ -241,7 +214,7 @@ index 6ef0042a355c65262bdb89dcf151bd644653216d..62494de82c0dbd2f464c08e36f202814
 -            throw new RuntimeException("Could not load plugin '" + configuration.getDisplayName() + "' as it is not marked as supporting Folia!");
 -        }
 +        // SilkMC start - compatibility manager
-+        gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.inspectAndEnforce(file, configuration);
++        gg.tame.silkmc.server.compat.SilkPluginCompatibility.inspectAndEnforce(source, configuration);
 +        // SilkMC end - compatibility manager
          // Folia end - block plugins not marked as supported
          // Copied from SimplePluginManager#loadPlugins

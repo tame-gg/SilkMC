@@ -1,0 +1,151 @@
+name: Plugin Compatibility Smoke Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure git identity
+        run: git config --global user.email "actions@github.com" && git config --global user.name "GitHub Actions"
+
+      - name: Apply patches
+        run: ./gradlew applyAllPatches --stacktrace
+
+      - name: Build
+        run: ./gradlew build --stacktrace
+
+      - name: Build runnable server jar
+        run: ./gradlew :silkmc-server:createPaperclipJar --stacktrace
+
+      - name: Cache curated plugin pack
+        uses: actions/cache@v4
+        with:
+          path: .cache/plugin-smoke-pack
+          key: plugin-smoke-pack-${{ hashFiles('ci/smoke-test-plugins.txt') }}
+
+      - name: Download curated plugin pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/plugin-smoke-pack
+          while IFS='|' read -r name filename url; do
+            if [[ -z "${name}" || "${name}" == \#* ]]; then
+              continue
+            fi
+            if [[ ! -f ".cache/plugin-smoke-pack/${filename}" ]]; then
+              echo "Downloading ${name} from ${url}"
+              curl -fL --retry 3 --retry-delay 2 -o ".cache/plugin-smoke-pack/${filename}" "${url}"
+            fi
+          done < ci/smoke-test-plugins.txt
+
+      - name: Stage smoke-test server
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf smoke-test-server
+          mkdir -p smoke-test-server/plugins
+          cp silkmc-server/build/libs/silkmc-paperclip-*.jar smoke-test-server/
+          printf 'eula=true\n' > smoke-test-server/eula.txt
+          printf 'online-mode=false\n' > smoke-test-server/server.properties
+          while IFS='|' read -r name filename url; do
+            if [[ -z "${name}" || "${name}" == \#* ]]; then
+              continue
+            fi
+            cp ".cache/plugin-smoke-pack/${filename}" "smoke-test-server/plugins/${filename}"
+          done < ci/smoke-test-plugins.txt
+
+      - name: Boot server
+        shell: bash
+        working-directory: smoke-test-server
+        run: |
+          set -euo pipefail
+          timeout 90s bash -lc '(sleep 75; printf "stop\n") | java -Xmx2G -jar silkmc-paperclip-*.jar nogui' || status=$?
+          if [[ "${status:-0}" != "0" && "${status:-0}" != "124" ]]; then
+            exit "${status}"
+          fi
+
+      - name: Evaluate latest.log
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          log_path = pathlib.Path("smoke-test-server/logs/latest.log")
+          if not log_path.exists():
+            print("latest.log was not created", file=sys.stderr)
+            sys.exit(1)
+
+          allowlist_path = pathlib.Path("ci/smoke-test-allowlist.txt")
+          plugin_manifest_path = pathlib.Path("ci/smoke-test-plugins.txt")
+          log_text = log_path.read_text(encoding="utf-8", errors="replace")
+          lines = log_text.splitlines()
+
+          allowlist = []
+          for raw_line in allowlist_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+              continue
+            allowlist.append(re.compile(line))
+
+          failures = []
+          error_pattern = re.compile(r"\b(ERROR|SEVERE)\b")
+          for line in lines:
+            if not error_pattern.search(line):
+              continue
+            if any(pattern.search(line) for pattern in allowlist):
+              continue
+            failures.append(line)
+
+          plugins = []
+          for raw_line in plugin_manifest_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+              continue
+            name, filename, url = line.split("|", 2)
+            enabled = any(name in log_line and "Enabling " in log_line for log_line in lines)
+            failed = any(name in log_line and ("Error occurred while enabling" in log_line or "Disabling plugin" in log_line) for log_line in lines)
+            status = "clean" if enabled and not failed else "failed"
+            plugins.append((name, status))
+
+          summary_path = pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary_path.open("a", encoding="utf-8") as summary:
+            summary.write("| Plugin | Enabled cleanly |\n")
+            summary.write("| --- | --- |\n")
+            for name, status in plugins:
+              summary.write(f"| {name} | {status} |\n")
+
+          if failures:
+            print("Unhandled ERROR/SEVERE lines detected:", file=sys.stderr)
+            for line in failures:
+              print(line, file=sys.stderr)
+            sys.exit(1)
+          PY
+
+      - name: Upload latest.log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-smoke-test-log
+          path: smoke-test-server/logs/latest.log
+          if-no-files-found: warn

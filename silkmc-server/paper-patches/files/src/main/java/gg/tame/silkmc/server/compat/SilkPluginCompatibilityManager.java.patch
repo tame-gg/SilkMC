@@ -1,295 +1,460 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
-@@ -1,0 +_,292 @@
+@@ -1,0 +_,437 @@
 +package gg.tame.silkmc.server.compat;
 +
-+import io.papermc.paper.plugin.provider.configuration.PaperPluginMeta;
++import io.papermc.paper.plugin.configuration.PluginMeta;
++import java.io.IOException;
 +import java.io.InputStream;
 +import java.nio.charset.StandardCharsets;
++import java.nio.file.Path;
++import java.text.DecimalFormat;
 +import java.util.ArrayList;
-+import java.util.Enumeration;
-+import java.util.LinkedHashSet;
++import java.util.Collection;
++import java.util.Collections;
++import java.util.Comparator;
++import java.util.EnumMap;
++import java.util.LinkedHashMap;
 +import java.util.List;
-+import java.util.Set;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Objects;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.jar.JarEntry;
 +import java.util.jar.JarFile;
-+import java.util.logging.Level;
 +import java.util.logging.Logger;
-+import org.bukkit.plugin.PluginDescriptionFile;
++import java.util.zip.ZipEntry;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.minecraft.server.MinecraftServer;
++import org.jetbrains.annotations.Nullable;
 +
 +public final class SilkPluginCompatibilityManager {
 +
 +    private static final Logger LOGGER = Logger.getLogger("SilkMC");
-+    private static final ConcurrentHashMap<String, Report> REPORTS = new ConcurrentHashMap<>();
-+    private static final ConcurrentHashMap<String, Boolean> SHIMMED = new ConcurrentHashMap<>();
++    private static final DecimalFormat MSPT_FORMAT = new DecimalFormat("#,##0.00");
++    private static final Map<String, Inspection> INSPECTIONS = new ConcurrentHashMap<>();
++    private static final Map<String, Report> REPORTS = new ConcurrentHashMap<>();
++    private static final Map<String, String> OVERRIDE_LOG_KEYS = new ConcurrentHashMap<>();
 +
 +    private SilkPluginCompatibilityManager() {
 +    }
 +
-+    public static void inspectAndEnforce(final JarFile jar, final PaperPluginMeta meta) {
-+        final Report report = inspect(jar, meta.getDisplayName(), meta.getVersion(),
-+            meta.getMainClass(), Family.PAPER,
-+            meta.isFoliaSupported() || meta.isSilkSupported());
-+        enforce(report);
-+    }
++    public static void inspectAndEnforce(final Path source, final PluginMeta meta) {
++        final SilkPluginCompatibility.OverrideEntry override = SilkPluginCompatibility.overrideFor(meta.getName());
++        final String key = normalizePluginName(meta.getName());
++        final Inspection inspection = INSPECTIONS.compute(key, (ignored, existing) -> {
++            final Path absoluteSource = source.toAbsolutePath().normalize();
++            if (existing != null && existing.matches(absoluteSource, meta)) {
++                return existing;
++            }
++            try {
++                return inspect(absoluteSource, meta);
++            } catch (final IOException ex) {
++                throw new RuntimeException("Failed to inspect plugin '" + meta.getName() + "'", ex);
++            }
++        });
 +
-+    public static void inspectAndEnforce(final JarFile jar, final PluginDescriptionFile descriptionFile) {
-+        final Family family = inferSpigotFamily(descriptionFile);
-+        final Report report = inspect(jar, descriptionFile.getFullName(), descriptionFile.getVersion(),
-+            descriptionFile.getMain(), family,
-+            descriptionFile.isFoliaSupported() || descriptionFile.isSilkSupported());
-+        enforce(report);
-+    }
++        final Report report = buildReport(inspection, meta, override);
++        REPORTS.put(key, report);
 +
-+    public static Report getReport(final String pluginName) {
-+        return REPORTS.get(pluginName);
-+    }
-+
-+    public static boolean isShimmed(final String pluginName) {
-+        return Boolean.TRUE.equals(SHIMMED.get(pluginName));
-+    }
-+
-+    private static Report inspect(final JarFile jar, final String name, final String version,
-+                                   final String main, final Family family, final boolean declaredSupported) {
-+        final Findings findings = scanSafely(jar, name);
-+        final Report report = classify(name, version, main, family, declaredSupported, findings);
-+        REPORTS.put(report.pluginName, report);
-+        if (SilkPluginCompatibility.shouldLogAnalysis()) {
-+            LOGGER.info("[SilkMC] Plugin compatibility analysis: " + report.pluginName
-+                + " -> " + report.classification.name()
-+                + " (family=" + report.family.name()
-+                + ", nms=" + report.nmsAccessLevel.name()
-+                + ", classes=" + report.scannedClasses + ")");
++        final Decision decision = decide(report);
++        if (decision.logWarning() && SilkPluginCompatibility.markWarned(meta.getName())) {
++            LOGGER.warning(decision.warningMessage());
 +        }
-+        return report;
++        if (decision.blocked()) {
++            throw new RuntimeException(decision.failureMessage());
++        }
 +    }
 +
-+    private static Findings scanSafely(final JarFile jar, final String pluginName) {
-+        final Findings findings = new Findings();
-+        if (jar == null) {
-+            return findings;
++    public static void refreshReports() {
++        for (final Inspection inspection : INSPECTIONS.values()) {
++            REPORTS.put(
++                normalizePluginName(inspection.pluginName()),
++                buildReport(inspection, inspection.meta(), SilkPluginCompatibility.overrideFor(inspection.pluginName()))
++            );
 +        }
-+        try {
-+            final Enumeration<JarEntry> entries = jar.entries();
++    }
++
++    public static Summary summarize() {
++        final EnumMap<Classification, Integer> counts = new EnumMap<>(Classification.class);
++        for (final Classification classification : Classification.values()) {
++            counts.put(classification, 0);
++        }
++        int shimmed = 0;
++        for (final Report report : REPORTS.values()) {
++            counts.compute(report.classification(), (ignored, current) -> Integer.valueOf(current == null ? 1 : current.intValue() + 1));
++            if (report.shimActive()) {
++                ++shimmed;
++            }
++        }
++        return new Summary(
++            counts.get(Classification.SAFE),
++            counts.get(Classification.COMPATIBLE),
++            counts.get(Classification.UNKNOWN),
++            counts.get(Classification.UNSAFE),
++            shimmed
++        );
++    }
++
++    public static List<Report> reports() {
++        final List<Report> reports = new ArrayList<>(REPORTS.values());
++        reports.sort(Comparator.comparing(Report::pluginName, String.CASE_INSENSITIVE_ORDER));
++        return reports;
++    }
++
++    public static @Nullable Report getReport(final String pluginName) {
++        return REPORTS.get(normalizePluginName(pluginName));
++    }
++
++    public static @Nullable Report report(final String pluginName) {
++        return getReport(pluginName);
++    }
++
++    public static Component renderStatusLine() {
++        final RegionStatus regionStatus = collectRegionStatus();
++        final Summary summary = summarize();
++
++        return Component.text()
++            .append(label("SilkMC "))
++            .append(value(MinecraftServer.getServer().getServerVersion()))
++            .append(separator(" | "))
++            .append(label("regions="))
++            .append(value(Integer.toString(regionStatus.regionCount())))
++            .append(separator(" | "))
++            .append(label("worst-mspt="))
++            .append(mspt(regionStatus.worstRegionMspt()))
++            .append(separator(" | "))
++            .append(label("safe="))
++            .append(classificationValue(summary.safe(), Classification.SAFE))
++            .append(separator(" "))
++            .append(label("compatible="))
++            .append(classificationValue(summary.compatible(), Classification.COMPATIBLE))
++            .append(separator(" "))
++            .append(label("unknown="))
++            .append(classificationValue(summary.unknown(), Classification.UNKNOWN))
++            .append(separator(" "))
++            .append(label("unsafe="))
++            .append(classificationValue(summary.unsafe(), Classification.UNSAFE))
++            .append(separator(" | "))
++            .append(label("shimmed="))
++            .append(value(Integer.toString(summary.shimmed())))
++            .build();
++    }
++
++    public static RegionStatus collectRegionStatus() {
++        final List<io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData>> regions =
++            new ArrayList<>();
++        for (final org.bukkit.World bukkitWorld : org.bukkit.Bukkit.getWorlds()) {
++            final net.minecraft.server.level.ServerLevel world = ((org.bukkit.craftbukkit.CraftWorld) bukkitWorld).getHandle();
++            world.regioniser.computeForAllRegions(regions::add);
++        }
++
++        final long now = System.nanoTime();
++        double worstMspt = 0.0D;
++        for (final io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData> region : regions) {
++            final ca.spottedleaf.moonrise.common.time.TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++            if (report == null) {
++                continue;
++            }
++            worstMspt = Math.max(worstMspt, report.timePerTickData().segmentAll().average() / 1.0E6D);
++        }
++
++        return new RegionStatus(regions.size(), worstMspt);
++    }
++
++    private static Inspection inspect(final Path source, final PluginMeta meta) throws IOException {
++        final List<String> technicalDetails = new ArrayList<>();
++        int scannedClassCount = 0;
++        boolean referencesCraftBukkit = false;
++        boolean referencesNms = false;
++        boolean referencesLegacyThreading = false;
++        boolean referencesLegacyScheduler = false;
++
++        try (JarFile jar = new JarFile(source.toFile())) {
++            final var entries = jar.entries();
 +            while (entries.hasMoreElements()) {
 +                final JarEntry entry = entries.nextElement();
-+                final String entryName = entry.getName();
-+                if (entry.isDirectory() || !entryName.endsWith(".class")) {
++                if (!(entry instanceof ZipEntry zipEntry) || zipEntry.isDirectory() || !entry.getName().endsWith(".class")) {
 +                    continue;
 +                }
-+                if (entryName.startsWith("META-INF/")) {
-+                    continue;
++                ++scannedClassCount;
++                try (InputStream input = jar.getInputStream(entry)) {
++                    final String byteString = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
++                    referencesCraftBukkit |= byteString.contains("org/bukkit/craftbukkit/");
++                    referencesNms |= byteString.contains("net/minecraft/") || byteString.contains("com/mojang/brigadier/");
++                    referencesLegacyThreading |= byteString.contains("org/spigotmc/AsyncCatcher")
++                        || byteString.contains("isPrimaryThread")
++                        || byteString.contains("thread failed main thread check");
++                    referencesLegacyScheduler |= byteString.contains("scheduleSyncDelayedTask")
++                        || byteString.contains("scheduleSyncRepeatingTask")
++                        || byteString.contains("callSyncMethod");
 +                }
-+                try (final InputStream in = jar.getInputStream(entry)) {
-+                    final byte[] classBytes = in.readAllBytes();
-+                    findings.scannedClasses++;
-+                    analyzeClassBytes(classBytes, findings);
-+                } catch (final Throwable t) {
-+                    LOGGER.log(Level.FINE, "SilkMC: failed to analyze class " + entryName + " in " + pluginName, t);
-+                }
-+            }
-+        } catch (final Throwable t) {
-+            LOGGER.log(Level.WARNING, "SilkMC: could not scan plugin JAR: " + pluginName, t);
-+        }
-+        return findings;
-+    }
-+
-+    private static void analyzeClassBytes(final byte[] classBytes, final Findings findings) {
-+        // Class files store class and member references as UTF-8 strings in the constant
-+        // pool, so a byte-string scan of the raw class is a robust way to detect API
-+        // usage at the package level without pulling in a bytecode-library dependency.
-+        final String content = new String(classBytes, StandardCharsets.ISO_8859_1);
-+
-+        if (content.contains("org/bukkit/")) {
-+            findings.usesBukkitApi = true;
-+            findings.referencedNamespaces.add("org/bukkit");
-+        }
-+        if (content.contains("org/spigotmc/")) {
-+            findings.usesSpigotApi = true;
-+            findings.referencedNamespaces.add("org/spigotmc");
-+        }
-+        if (content.contains("io/papermc/") || content.contains("com/destroystokyo/paper/")) {
-+            findings.usesPaperApi = true;
-+            findings.referencedNamespaces.add("io/papermc");
-+        }
-+        if (content.contains("org/bukkit/scheduler/")) {
-+            findings.usesScheduler = true;
-+        }
-+        if (content.contains("BukkitRunnable")) {
-+            findings.usesBukkitRunnable = true;
-+        }
-+        if (content.contains("runTaskAsynchronously")
-+            || content.contains("runTaskTimerAsynchronously")
-+            || content.contains("runTaskLaterAsynchronously")
-+            || content.contains("scheduleAsyncDelayedTask")
-+            || content.contains("scheduleAsyncRepeatingTask")
-+            || content.contains("runAsync")) {
-+            findings.usesAsyncScheduling = true;
-+        }
-+        if (content.contains("net/minecraft/")) {
-+            findings.accessesNms = true;
-+            findings.upgradeNms(NmsLevel.LOW);
-+            findings.referencedNamespaces.add("net/minecraft");
-+
-+            if (content.contains("net/minecraft/world/entity/")
-+                || content.contains("net/minecraft/server/level/ServerEntity")) {
-+                findings.upgradeNms(NmsLevel.MEDIUM);
-+            }
-+            if (content.contains("net/minecraft/world/level/Level")
-+                || content.contains("net/minecraft/server/level/ServerLevel")
-+                || content.contains("net/minecraft/server/level/ServerChunkCache")) {
-+                findings.upgradeNms(NmsLevel.HIGH);
-+                findings.directWorldMutation = true;
 +            }
 +        }
-+    }
 +
-+    private static Report classify(final String name, final String version, final String main,
-+                                    final Family family, final boolean declaredSupported,
-+                                    final Findings findings) {
-+        final List<String> issues = new ArrayList<>();
-+        final List<String> technicalDetails = new ArrayList<>();
-+
-+        if (findings.directWorldMutation && findings.nmsLevel == NmsLevel.HIGH
-+            && findings.usesAsyncScheduling) {
-+            issues.add("Plugin combines asynchronous scheduling with direct NMS-level world access, "
-+                + "which is incompatible with SilkMC's region threading model.");
-+            technicalDetails.add("HIGH NMS access detected (net/minecraft/world/level/* or server/level/*) combined with async scheduler usage.");
-+        }
-+
-+        final Classification classification;
-+        if (!issues.isEmpty()) {
-+            classification = Classification.UNSAFE;
-+        } else if (declaredSupported) {
-+            classification = Classification.SAFE;
-+            technicalDetails.add("Plugin declares silk-supported or folia-supported and is treated as fully compatible.");
-+        } else if (findings.usesScheduler || findings.usesBukkitRunnable
-+            || findings.usesBukkitApi || findings.usesPaperApi || findings.usesSpigotApi) {
-+            classification = Classification.COMPATIBLE;
-+            if (findings.usesScheduler || findings.usesBukkitRunnable) {
-+                technicalDetails.add("Plugin relies on legacy Bukkit scheduler patterns; the SilkMC compatibility shim layer will bridge these.");
-+            } else {
-+                technicalDetails.add("Plugin uses Bukkit/Paper/Spigot APIs and will run under the SilkMC compatibility shim layer.");
-+            }
-+        } else if (findings.scannedClasses == 0) {
-+            classification = Classification.UNKNOWN;
-+            technicalDetails.add("SilkMC could not read any classes from the plugin JAR; classification could not be performed.");
++        final NmsAccessLevel nmsAccessLevel;
++        if (referencesNms) {
++            nmsAccessLevel = NmsAccessLevel.NMS;
++        } else if (referencesCraftBukkit) {
++            nmsAccessLevel = NmsAccessLevel.CRAFTBUKKIT;
 +        } else {
-+            classification = Classification.UNKNOWN;
-+            technicalDetails.add("Plugin did not declare silk-supported and SilkMC could not infer its compatibility profile from bytecode.");
++            nmsAccessLevel = NmsAccessLevel.NONE;
 +        }
 +
-+        return new Report(name, version, main, family, classification, findings.nmsLevel,
-+            List.copyOf(issues), List.copyOf(technicalDetails),
-+            Set.copyOf(findings.referencedNamespaces), findings.scannedClasses);
++        technicalDetails.add("Source jar: " + source);
++        technicalDetails.add("Main class: " + meta.getMainClass());
++        technicalDetails.add("Declared compatibility metadata: " + yesNo(meta.isSilkSupported() || meta.isFoliaSupported()));
++        technicalDetails.add("Scanned classes: " + scannedClassCount);
++        technicalDetails.add("Detected legacy scheduler references: " + yesNo(referencesLegacyScheduler));
++        technicalDetails.add("Detected legacy thread checks: " + yesNo(referencesLegacyThreading));
++        technicalDetails.add("Detected CraftBukkit internals: " + yesNo(referencesCraftBukkit));
++        technicalDetails.add("Detected NMS internals: " + yesNo(referencesNms));
++
++        return new Inspection(
++            source,
++            meta.getName(),
++            meta.getVersion(),
++            meta,
++            determineFamily(meta),
++            scannedClassCount,
++            nmsAccessLevel,
++            meta.isSilkSupported() || meta.isFoliaSupported(),
++            referencesLegacyThreading,
++            referencesLegacyScheduler,
++            referencesCraftBukkit,
++            referencesNms,
++            List.copyOf(technicalDetails)
++        );
 +    }
 +
-+    private static void enforce(final Report report) {
-+        switch (report.classification) {
-+            case SAFE -> { /* load normally */ }
-+            case COMPATIBLE -> activateShim(report);
-+            case UNKNOWN -> {
-+                if (!SilkPluginCompatibility.allowsUnknownPlugins()) {
-+                    logRejection(report);
-+                    throw new RuntimeException("SilkMC blocked plugin '" + report.pluginName
-+                        + "': compatibility could not be determined and strict mode is enabled.");
-+                }
-+                LOGGER.warning("[SilkMC] Plugin '" + report.pluginName
-+                    + "' classified UNKNOWN; loaded under allow-unknown-plugins policy. Use with caution.");
-+            }
-+            case UNSAFE -> {
-+                logRejection(report);
-+                throw new RuntimeException("SilkMC blocked plugin '" + report.pluginName
-+                    + "': classified as UNSAFE under the SilkMC compatibility policy.");
-+            }
-+        }
-+    }
++    private static Report buildReport(final Inspection inspection, final PluginMeta meta, final @Nullable SilkPluginCompatibility.OverrideEntry override) {
++        final List<String> reasons = new ArrayList<>();
++        final List<String> technicalDetails = new ArrayList<>(inspection.technicalDetails());
 +
-+    private static void activateShim(final Report report) {
-+        if (SHIMMED.putIfAbsent(report.pluginName, Boolean.TRUE) == null) {
-+            LOGGER.info("[SilkMC] Compatibility shim layer active for plugin '" + report.pluginName + "'.");
-+        }
-+    }
++        final Classification effectiveClassification;
++        boolean overrideApplied = false;
++        boolean forceLoad = false;
++        String overrideReason = "";
 +
-+    private static void logRejection(final Report report) {
-+        final StringBuilder sb = new StringBuilder("\n[SilkMC Plugin Compatibility System]\n\n");
-+        sb.append("Plugin: ").append(report.pluginName);
-+        if (report.pluginVersion != null && !report.pluginVersion.isBlank()) {
-+            sb.append(" v").append(report.pluginVersion);
-+        }
-+        sb.append("\n\nStatus: BLOCKED (").append(report.classification.name()).append(")\n\nReason(s):\n");
-+        if (report.safetyIssues.isEmpty()) {
-+            sb.append("- SilkMC could not determine plugin safety with confidence.\n");
++        if (override != null && override.classificationOverride() != SilkPluginCompatibility.ClassificationOverride.AUTO) {
++            overrideApplied = true;
++            forceLoad = override.forceLoad();
++            overrideReason = override.reason();
++            effectiveClassification = override.classificationOverride().toClassification();
++            reasons.add("Operator override forced classification to " + effectiveClassification.name() + ".");
++            technicalDetails.add("Override reason: " + (overrideReason.isBlank() ? "(none provided)" : overrideReason));
++            logOverrideApplication(inspection.pluginName(), override, effectiveClassification);
 +        } else {
-+            for (final String issue : report.safetyIssues) {
-+                sb.append("- ").append(issue).append('\n');
++            effectiveClassification = classifyHeuristically(inspection, reasons);
++            if (override != null && override.forceLoad()) {
++                overrideApplied = true;
++                forceLoad = true;
++                overrideReason = override.reason();
++                reasons.add("Operator override enables force-load without changing the heuristic classification.");
++                technicalDetails.add("Override reason: " + (overrideReason.isBlank() ? "(none provided)" : overrideReason));
++                logOverrideApplication(inspection.pluginName(), override, effectiveClassification);
 +            }
 +        }
-+        sb.append("\nTechnical Details:\n");
-+        for (final String detail : report.technicalDetails) {
-+            sb.append("- ").append(detail).append('\n');
++
++        return new Report(
++            inspection.pluginName(),
++            inspection.version(),
++            effectiveClassification,
++            inspection.family(),
++            effectiveClassification == Classification.COMPATIBLE || (effectiveClassification == Classification.UNKNOWN && forceLoad),
++            inspection.nmsAccessLevel(),
++            inspection.scannedClassCount(),
++            overrideApplied,
++            forceLoad,
++            overrideReason,
++            List.copyOf(reasons),
++            List.copyOf(technicalDetails)
++        );
++    }
++
++    private static Classification classifyHeuristically(final Inspection inspection, final List<String> reasons) {
++        if (inspection.declaredSupported()) {
++            reasons.add("Declares `silk-supported: true` or legacy `folia-supported: true` metadata.");
++            return Classification.SAFE;
 +        }
-+        sb.append("- NMS access level: ").append(report.nmsAccessLevel.name()).append('\n');
-+        sb.append("- Plugin family: ").append(report.family.name()).append('\n');
-+        sb.append("- Scanned classes: ").append(report.scannedClasses).append('\n');
-+        sb.append("\nImpact:\nThis plugin could cause world corruption, memory corruption, or thread safety violations under SilkMC.\n\n");
-+        sb.append("Recommendation:\n");
-+        sb.append("- Use a SilkMC-compatible build of the plugin\n");
-+        sb.append("- Remove unsafe async world access\n");
-+        sb.append("- Update plugin to Paper-compatible API usage\n");
-+        LOGGER.severe(sb.toString());
-+    }
-+
-+    private static Family inferSpigotFamily(final PluginDescriptionFile descriptionFile) {
-+        if (descriptionFile.getAPIVersion() != null && !descriptionFile.getAPIVersion().isBlank()) {
-+            return Family.SPIGOT;
++        if (inspection.referencesLegacyThreading()) {
++            reasons.add("Bytecode references legacy single-thread or async-catcher checks that SilkMC cannot safely emulate.");
++            return Classification.UNSAFE;
 +        }
-+        return Family.BUKKIT;
-+    }
-+
-+    public enum Classification {
-+        SAFE, COMPATIBLE, UNSAFE, UNKNOWN
-+    }
-+
-+    public enum NmsLevel {
-+        NONE, LOW, MEDIUM, HIGH
-+    }
-+
-+    public enum Family {
-+        PAPER, SPIGOT, BUKKIT, UNKNOWN
-+    }
-+
-+    public static final class Findings {
-+        public final Set<String> referencedNamespaces = new LinkedHashSet<>();
-+        public boolean usesBukkitApi;
-+        public boolean usesSpigotApi;
-+        public boolean usesPaperApi;
-+        public boolean usesScheduler;
-+        public boolean usesBukkitRunnable;
-+        public boolean usesAsyncScheduling;
-+        public boolean accessesNms;
-+        public boolean directWorldMutation;
-+        public int scannedClasses;
-+        public NmsLevel nmsLevel = NmsLevel.NONE;
-+
-+        void upgradeNms(final NmsLevel level) {
-+            if (level.ordinal() > this.nmsLevel.ordinal()) {
-+                this.nmsLevel = level;
-+            }
++        if (inspection.referencesCraftBukkit() || inspection.referencesNms() || inspection.referencesLegacyScheduler()) {
++            reasons.add("Touches legacy server internals or scheduler APIs and should be reviewed by an operator.");
++            return Classification.UNKNOWN;
 +        }
++        reasons.add("No direct legacy server internals were detected in the plugin bytecode scan.");
++        return Classification.COMPATIBLE;
++    }
++
++    private static void logOverrideApplication(final String pluginName, final SilkPluginCompatibility.OverrideEntry override, final Classification classification) {
++        final String reason = override.reason().isBlank() ? "(no operator reason provided)" : override.reason();
++        final String logKey = classification.name() + "|" + override.forceLoad() + "|" + reason;
++        final String previous = OVERRIDE_LOG_KEYS.put(normalizePluginName(pluginName), logKey);
++        if (Objects.equals(previous, logKey)) {
++            return;
++        }
++        LOGGER.info("Applying SilkMC compatibility override for '" + pluginName + "': classification="
++            + override.classificationOverride().name()
++            + ", force-load=" + override.forceLoad()
++            + ", effective=" + classification.name()
++            + ", reason=" + reason);
++    }
++
++    private static Decision decide(final Report report) {
++        final String pluginName = report.pluginName();
++        final String metadataMessage = "Plugin '" + pluginName + "' does not declare `silk-supported: true` (legacy `folia-supported: true` is also accepted).";
++
++        if (report.classification() == Classification.UNSAFE && !report.forceLoad()) {
++            return new Decision(
++                true,
++                false,
++                metadataMessage,
++                "Plugin '" + pluginName + "' was classified as UNSAFE by SilkMC compatibility inspection. Set an override only after validating it on a staging server."
++            );
++        }
++
++        if (report.classification() == Classification.UNKNOWN && SilkPluginCompatibility.requiresExplicitDeclaration() && !report.forceLoad()) {
++            return new Decision(
++                true,
++                false,
++                metadataMessage,
++                metadataMessage + " SilkMC is configured to require explicit compatibility metadata for UNKNOWN plugins."
++            );
++        }
++
++        if (report.classification() == Classification.COMPATIBLE || report.classification() == Classification.UNKNOWN) {
++            return new Decision(
++                false,
++                SilkPluginCompatibility.shouldWarnOnLoad(),
++                metadataMessage + " Loading with SilkMC classification " + report.classification().name() + ".",
++                ""
++            );
++        }
++
++        return new Decision(false, false, "", "");
++    }
++
++    private static String determineFamily(final PluginMeta meta) {
++        final String mainClass = meta.getMainClass();
++        final String[] parts = mainClass.split("\\.");
++        if (parts.length >= 2) {
++            return parts[0] + "." + parts[1];
++        }
++        return meta.getName();
++    }
++
++    private static String yesNo(final boolean value) {
++        return value ? "yes" : "no";
++    }
++
++    private static String normalizePluginName(final String pluginName) {
++        return pluginName.trim().toLowerCase(Locale.ROOT);
++    }
++
++    private static Component label(final String text) {
++        return Component.text(text, NamedTextColor.GRAY);
++    }
++
++    private static Component value(final String text) {
++        return Component.text(text, NamedTextColor.WHITE);
++    }
++
++    private static Component separator(final String text) {
++        return Component.text(text, NamedTextColor.DARK_GRAY);
++    }
++
++    private static Component mspt(final double value) {
++        final NamedTextColor color;
++        if (value >= 50.0D) {
++            color = NamedTextColor.RED;
++        } else if (value >= 35.0D) {
++            color = NamedTextColor.GOLD;
++        } else if (value >= 20.0D) {
++            color = NamedTextColor.YELLOW;
++        } else {
++            color = NamedTextColor.GREEN;
++        }
++        return Component.text(MSPT_FORMAT.format(value), color);
++    }
++
++    private static Component classificationValue(final int count, final Classification classification) {
++        final NamedTextColor color = switch (classification) {
++            case SAFE -> NamedTextColor.GREEN;
++            case COMPATIBLE -> NamedTextColor.AQUA;
++            case UNKNOWN -> NamedTextColor.YELLOW;
++            case UNSAFE -> NamedTextColor.RED;
++        };
++        return Component.text(Integer.toString(count), color);
++    }
++
++    private record Inspection(
++        Path source,
++        String pluginName,
++        String version,
++        PluginMeta meta,
++        String family,
++        int scannedClassCount,
++        NmsAccessLevel nmsAccessLevel,
++        boolean declaredSupported,
++        boolean referencesLegacyThreading,
++        boolean referencesLegacyScheduler,
++        boolean referencesCraftBukkit,
++        boolean referencesNms,
++        List<String> technicalDetails
++    ) {
++        private boolean matches(final Path otherSource, final PluginMeta otherMeta) {
++            return this.source.equals(otherSource)
++                && this.version.equals(otherMeta.getVersion())
++                && this.meta.getMainClass().equals(otherMeta.getMainClass());
++        }
++    }
++
++    private record Decision(boolean blocked, boolean logWarning, String warningMessage, String failureMessage) {
++    }
++
++    public record RegionStatus(int regionCount, double worstRegionMspt) {
++    }
++
++    public record Summary(int safe, int compatible, int unknown, int unsafe, int shimmed) {
 +    }
 +
 +    public record Report(
 +        String pluginName,
-+        String pluginVersion,
-+        String mainClass,
-+        Family family,
++        String version,
 +        Classification classification,
-+        NmsLevel nmsAccessLevel,
-+        List<String> safetyIssues,
-+        List<String> technicalDetails,
-+        Set<String> referencedNamespaces,
-+        int scannedClasses
-+    ) {}
++        String family,
++        boolean shimActive,
++        NmsAccessLevel nmsAccessLevel,
++        int scannedClassCount,
++        boolean overrideApplied,
++        boolean forceLoad,
++        String overrideReason,
++        List<String> reasons,
++        List<String> technicalDetails
++    ) {
++        public List<String> reasons() {
++            return this.reasons == null ? Collections.emptyList() : this.reasons;
++        }
++
++        public List<String> technicalDetails() {
++            return this.technicalDetails == null ? Collections.emptyList() : this.technicalDetails;
++        }
++    }
++
++    public enum Classification {
++        SAFE,
++        COMPATIBLE,
++        UNKNOWN,
++        UNSAFE
++    }
++
++    public enum NmsAccessLevel {
++        NONE,
++        CRAFTBUKKIT,
++        NMS
++    }
 +}
