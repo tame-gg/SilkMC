@@ -1,0 +1,373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenAI Codex <codex@openai.com>
+Date: Tue, 19 May 2026 02:40:00 -0500
+Subject: [PATCH] Restore locator bar and region threading fixes
+
+Bring locator bar support back on SilkMC's region-threaded base by
+re-enabling waypoint commands, swapping in a region-aware waypoint
+manager, and carrying a few adjacent Canvas-style stability fixes for
+respawn anchors, waypoint visibility checks, and same-region teleports.
+
+diff --git a/gg/tame/silkmc/server/waypoints/RegionThreadingWaypointManager.java b/gg/tame/silkmc/server/waypoints/RegionThreadingWaypointManager.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9efbb36ff57e94a65193c1471cf07e43ff72e81
+--- /dev/null
++++ b/gg/tame/silkmc/server/waypoints/RegionThreadingWaypointManager.java
+@@ -0,0 +1,245 @@
++package gg.tame.silkmc.server.waypoints;
++
++import ca.spottedleaf.concurrentutil.collection.MultiThreadedQueue;
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
++import java.util.HashSet;
++import java.util.Map;
++import java.util.Set;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.server.waypoints.ServerWaypointManager;
++import net.minecraft.world.waypoints.WaypointTransmitter;
++import org.jspecify.annotations.Nullable;
++
++public final class RegionThreadingWaypointManager extends ServerWaypointManager {
++    private static final double FAR_UPDATE_SCALE = 4000.0D;
++
++    private final MultiThreadedQueue<WaypointTransmitter> waypoints = new MultiThreadedQueue<>();
++    private final MultiThreadedQueue<ServerPlayer> players = new MultiThreadedQueue<>();
++
++    public RegionThreadingWaypointManager(final ServerLevel level) {
++        super(level);
++    }
++
++    private boolean isLocatorBarDisabled() {
++        return !this.locatorBarEnabled;
++    }
++
++    private static boolean shouldScheduleBasedOnDistance(final ServerPlayer origin, final ServerPlayer target) {
++        final double scaled = origin.distanceTo(target) / FAR_UPDATE_SCALE;
++        return origin.random.nextDouble() < (1.0D / (1.0D + (scaled * scaled)));
++    }
++
++    private static void breakConnections(final ServerPlayer player) {
++        TickThread.ensureTickThread(player, "Cannot break waypoint connections off owning thread of player");
++        final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = player.silk$activeWaypoints;
++        for (final WaypointTransmitter.Connection connection : map.values()) {
++            connection.disconnect();
++        }
++        map.clear();
++    }
++
++    @Override
++    public void trackWaypoint(final WaypointTransmitter waypoint) {
++        if (this.isLocatorBarDisabled()) {
++            return;
++        }
++        if (!this.waypoints.contains(waypoint)) {
++            this.waypoints.add(waypoint);
++        }
++
++        for (final ServerPlayer player : this.players) {
++            player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++                this.createConnection(ownedPlayer, waypoint);
++            });
++        }
++    }
++
++    @Override
++    public void updateWaypoint(final WaypointTransmitter waypoint) {
++        if (this.isLocatorBarDisabled() || !this.waypoints.contains(waypoint)) {
++            return;
++        }
++
++        final ServerPlayer updatingPlayer = waypoint instanceof ServerPlayer serverPlayer ? serverPlayer : null;
++        for (final ServerPlayer player : this.players) {
++            if (player == waypoint) {
++                continue;
++            }
++            if (updatingPlayer != null && updatingPlayer.distanceTo(player) > 332.0F && !shouldScheduleBasedOnDistance(updatingPlayer, player)) {
++                continue;
++            }
++
++            player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++                this.updateWaypointForPlayer(waypoint, ownedPlayer);
++            });
++        }
++    }
++
++    private void updateWaypointForPlayer(final WaypointTransmitter waypoint, final ServerPlayer player) {
++        TickThread.ensureTickThread(player, "Cannot update waypoint off owning thread of player");
++        final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = player.silk$activeWaypoints;
++        final WaypointTransmitter.Connection connection = map.get(waypoint);
++
++        if (connection != null) {
++            final CallbackHolder callbackHolder = this.updateConnectionForPlayer(player, waypoint, connection);
++            if (callbackHolder != null) {
++                callbackHolder.call.run();
++            }
++        } else {
++            this.createConnection(player, waypoint);
++        }
++    }
++
++    @Override
++    public void untrackWaypoint(final WaypointTransmitter waypoint) {
++        for (final ServerPlayer player : this.players) {
++            player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++                this.disconnectWaypoint(waypoint, ownedPlayer);
++            });
++        }
++        this.waypoints.remove(waypoint);
++    }
++
++    private void disconnectWaypoint(final WaypointTransmitter waypoint, final ServerPlayer player) {
++        TickThread.ensureTickThread(player, "Cannot disconnect waypoint off owning thread of player");
++        final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = player.silk$activeWaypoints;
++        final WaypointTransmitter.Connection connection = map.remove(waypoint);
++        if (connection != null) {
++            connection.disconnect();
++        }
++    }
++
++    @Override
++    public void addPlayer(final ServerPlayer player) {
++        if (!this.players.contains(player)) {
++            this.players.add(player);
++        }
++
++        if (this.isLocatorBarDisabled()) {
++            return;
++        }
++        for (final WaypointTransmitter waypoint : this.waypoints) {
++            this.createConnection(player, waypoint);
++        }
++
++        if (player.isTransmittingWaypoint()) {
++            this.trackWaypoint(player);
++        }
++    }
++
++    @Override
++    public void updatePlayer(final ServerPlayer player) {
++        if (this.isLocatorBarDisabled()) {
++            return;
++        }
++        player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++            final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = ownedPlayer.silk$activeWaypoints;
++            final CallbackHolder[] callbackHolders = new CallbackHolder[map.size()];
++
++            int idx = 0;
++            for (final Map.Entry<WaypointTransmitter, WaypointTransmitter.Connection> entry : map.object2ObjectEntrySet()) {
++                final CallbackHolder callbackHolder = this.updateConnectionForPlayer(ownedPlayer, entry.getKey(), entry.getValue());
++                if (callbackHolder != null) {
++                    callbackHolders[idx++] = callbackHolder;
++                }
++            }
++
++            for (final CallbackHolder callbackHolder : callbackHolders) {
++                if (callbackHolder == null) {
++                    break;
++                }
++                callbackHolder.call.run();
++            }
++
++            for (final WaypointTransmitter waypoint : this.waypoints) {
++                if (!map.containsKey(waypoint)) {
++                    this.createConnection(ownedPlayer, waypoint);
++                }
++            }
++        });
++    }
++
++    @Override
++    public void removePlayer(final ServerPlayer player) {
++        breakConnections(player);
++        this.untrackWaypoint(player);
++        this.players.remove(player);
++    }
++
++    @Override
++    public void breakAllConnections() {
++        for (final ServerPlayer player : this.players) {
++            player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++                breakConnections(ownedPlayer);
++            });
++        }
++    }
++
++    @Override
++    public void remakeConnections(final WaypointTransmitter waypoint) {
++        if (this.isLocatorBarDisabled()) {
++            return;
++        }
++        for (final ServerPlayer player : this.players) {
++            player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++                this.createConnection(ownedPlayer, waypoint);
++            });
++        }
++    }
++
++    @Override
++    public Set<WaypointTransmitter> transmitters() {
++        return new HashSet<>(this.waypoints);
++    }
++
++    private void createConnection(final ServerPlayer player, final WaypointTransmitter waypoint) {
++        if (player == waypoint) {
++            return;
++        }
++        TickThread.ensureTickThread(player, "Cannot create waypoint connection off owning thread of player");
++
++        final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = player.silk$activeWaypoints;
++        waypoint.makeWaypointConnectionWith(player).ifPresentOrElse(connection -> {
++            map.put(waypoint, connection);
++            connection.connect();
++        }, () -> {
++            final WaypointTransmitter.Connection existing = map.remove(waypoint);
++            if (existing != null) {
++                existing.disconnect();
++            }
++        });
++    }
++
++    private @Nullable CallbackHolder updateConnectionForPlayer(
++        final ServerPlayer player,
++        final WaypointTransmitter waypoint,
++        final WaypointTransmitter.Connection connection
++    ) {
++        if (player == waypoint) {
++            return null;
++        }
++        TickThread.ensureTickThread(player, "Cannot update waypoint connection off owning thread of player");
++
++        final Object2ObjectMap<WaypointTransmitter, WaypointTransmitter.Connection> map = player.silk$activeWaypoints;
++        if (!connection.isBroken()) {
++            connection.update();
++            return null;
++        }
++
++        final CallbackHolder ref = new CallbackHolder();
++        waypoint.makeWaypointConnectionWith(player).ifPresentOrElse(newConnection -> ref.call = () -> {
++            newConnection.connect();
++            map.put(waypoint, newConnection);
++        }, () -> ref.call = () -> {
++            connection.disconnect();
++            map.remove(waypoint);
++        });
++        return ref;
++    }
++
++    private static final class CallbackHolder {
++        Runnable call;
++    }
++}
+\ No newline at end of file
+
+diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
+index 1e1cb2aaec7037d16f3e91092e013c06e7fc30f..ca2e8101284ae75f880d0726db6267b85f05b367 100644
+--- a/net/minecraft/commands/Commands.java
++++ b/net/minecraft/commands/Commands.java
+@@ -261,7 +261,7 @@ public class Commands {
+         TimeCommand.register(this.dispatcher, context);
+         TitleCommand.register(this.dispatcher, context);
+         //TriggerCommand.register(this.dispatcher); // Folia - region threading - TODO later
+-        //WaypointCommand.register(this.dispatcher, context); // Folia - region threading - TODO later
++        WaypointCommand.register(this.dispatcher, context);
+         WeatherCommand.register(this.dispatcher);
+         WorldBorderCommand.register(this.dispatcher);
+         if (JvmProfiler.INSTANCE.isAvailable()) {
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index a51a9e7a0fa5727690046d814eb0b26d5742cd74..6980cadf1c6f00b15ec3e8a9c2193d668848b246 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -680,7 +680,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+         this.sleepStatus = new SleepStatus();
+         this.gameEventDispatcher = new GameEventDispatcher(this);
+-        this.waypointManager = new ServerWaypointManager(this); // Paper - optimize ServerWaypointManager with locator bar disabled
++        this.waypointManager = new gg.tame.silkmc.server.waypoints.RegionThreadingWaypointManager(this); // Paper - optimize ServerWaypointManager with locator bar disabled // SilkMC - region threading
+         this.environmentAttributes = EnvironmentAttributeSystem.builder().addDefaultLayers(this).build();
+         //this.updateSkyBrightness(); // Folia - region threading - delay until first tick
+         // Paper start - rewrite chunk system
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 5d4310d5af56ff6f7ab35ce0d0ef15ca379dca4e..de011d99b3c029f73df76afe038e4dcd60992585 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -270,6 +270,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     private @Nullable BlockPos raidOmenPosition;
+     private Vec3 lastKnownClientMovement = Vec3.ZERO;
+     private Input lastClientInput = Input.EMPTY;
++    public final it.unimi.dsi.fastutil.objects.Object2ObjectMap<net.minecraft.world.waypoints.WaypointTransmitter, net.minecraft.world.waypoints.WaypointTransmitter.Connection> silk$activeWaypoints = new it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap<>();
+     private final Set<ThrownEnderpearl> enderPearls = new HashSet<>();
+     private long timeEntitySatOnShoulder;
+     private CompoundTag shoulderEntityLeft = new CompoundTag();
+@@ -1635,7 +1636,16 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+             Runnable consumeAnchorCharge = null; // Paper - Fix SPIGOT-5989 (don't use charge until after respawn event)
+             Optional<Vec3> standUpPosition = RespawnAnchorBlock.findStandUpPosition(EntityType.PLAYER, level, pos);
+             if (!forced && consumeSpawnBlock && standUpPosition.isPresent()) {
+-                consumeAnchorCharge = () -> level.setBlock(pos, blockState.setValue(RespawnAnchorBlock.CHARGE, blockState.getValue(RespawnAnchorBlock.CHARGE) - 1), Block.UPDATE_ALL); // Paper - Fix SPIGOT-5989 (don't use charge until after respawn event)
++                consumeAnchorCharge = () -> level.moonrise$loadChunksAsync(
++                    pos,
++                    1,
++                    ca.spottedleaf.concurrentutil.util.Priority.NORMAL,
++                    chunks -> level.setBlock(
++                        pos,
++                        blockState.setValue(RespawnAnchorBlock.CHARGE, blockState.getValue(RespawnAnchorBlock.CHARGE) - 1),
++                        Block.UPDATE_ALL
++                    )
++                ); // Paper - Fix SPIGOT-5989 (don't use charge until after respawn event)
+             }
+             final Runnable finalConsumeAnchorCharge = consumeAnchorCharge; // Paper - Fix SPIGOT-5989
+ 
+@@ -1725,6 +1735,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         ca.spottedleaf.concurrentutil.completable.CallbackCompletable<org.bukkit.Location> spawnPosComplete =
+             new ca.spottedleaf.concurrentutil.completable.CallbackCompletable<>();
+         boolean[] usedRespawnAnchor = new boolean[1];
++        ServerPlayer.RespawnPosAngle[] respawnPosAngle = new ServerPlayer.RespawnPosAngle[1];
+ 
+         // set up post spawn location logic
+         spawnPosComplete.addWaiter((spawnLoc, throwable) -> {
+@@ -1753,6 +1764,9 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+                                 1.0F, 1.0F, ServerPlayer.this.level().getRandom().nextLong()
+                             )
+                         );
++                        if (respawnPosAngle[0] != null && respawnPosAngle[0].consumeAnchorCharge() != null) {
++                            respawnPosAngle[0].consumeAnchorCharge().run();
++                        }
+                     }
+                     ServerPlayer.this.connection.restartClientLoadTimerAfterRespawn();
+                     // now the respawn logic is complete
+@@ -1795,6 +1809,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+                     boolean isRespawnAnchor = respawnWorld.getBlockState(respawnConfig.respawnData.pos()).is(net.minecraft.world.level.block.Blocks.RESPAWN_ANCHOR);
+                     boolean isBed = respawnWorld.getBlockState(respawnConfig.respawnData.pos()).is(net.minecraft.tags.BlockTags.BEDS);
+                     usedRespawnAnchor[0] = !alive && isRespawnAnchor;
++                    respawnPosAngle[0] = spawnPos;
+ 
+                     // finished now, pass the location on
+                     spawnPosComplete.complete(
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 13f2391a119b1df8c749f8e9ef51dd5ead20b6d4..c8f8f989733d4d3eecf1f126677e7d8553a81653 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -4436,7 +4436,9 @@ public abstract class Entity
+             }
+ 
+             for (EntityTreeNode entity : passengerTree.getFullTree()) {
++                if (entity.root instanceof ServerPlayer player) destination.getWaypointManager().untrackWaypoint(player); // SilkMC - region threading
+                 entity.root.teleportSyncSameRegion(pos, yaw, pitch, velocity);
++                if (entity.root instanceof ServerPlayer player) destination.getWaypointManager().trackWaypoint(player); // SilkMC - region threading
+             }
+ 
+             if (hasPassengers) {
+diff --git a/net/minecraft/world/waypoints/WaypointTransmitter.java b/net/minecraft/world/waypoints/WaypointTransmitter.java
+index d6f842cbd2060eb56a1e4384b3ea97feea3e73ba..bab7c0253f941dd0e462813abaf4b6586edf3a24 100644
+--- a/net/minecraft/world/waypoints/WaypointTransmitter.java
++++ b/net/minecraft/world/waypoints/WaypointTransmitter.java
+@@ -34,6 +34,9 @@ public interface WaypointTransmitter extends Waypoint {
+     }
+ 
+     static boolean isChunkVisible(final ChunkPos chunkPos, final ServerPlayer receiver) {
++        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(receiver)) {
++            return false;
++        }
+         // Paper start - rewrite chunk system
+         final ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData playerChunkLoader = ((ca.spottedleaf.moonrise.patches.chunk_system.player.ChunkSystemServerPlayer)receiver).moonrise$getChunkLoader();
+         return playerChunkLoader != null && playerChunkLoader.getSentChunksRaw().contains(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(chunkPos));
