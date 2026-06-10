@@ -14,7 +14,7 @@ It preserves Folia's regional multithreading architecture while presenting SilkM
 ## Current state
 
 - Upstream baseline: Folia `26.1.2` (`ver/26.1.x`, synced May 17, 2026)
-- Project stage: `v0.1.6-alpha`
+- Project stage: `v0.1.7-alpha`
 - Java toolchain: JDK 25
 - Build system: Gradle + Paperweight patch workflow
 
