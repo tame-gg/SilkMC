@@ -130,7 +130,7 @@
 +            throw new RuntimeException(message + " SilkMC is configured to require explicit compatibility metadata.");
 +        }
 +
-+        if (policy.warnOnLoad && WARNED_PLUGINS.add(pluginName)) {
++        if (policy.warnOnLoad && WARNED_PLUGINS.add(normalizePluginName(pluginName))) {
 +            LOGGER.warning(message + " Loading in compatibility warning mode; thread-safety issues may still occur.");
 +        }
 +    }
