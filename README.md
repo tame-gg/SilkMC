@@ -13,8 +13,8 @@ It preserves Folia's regional multithreading architecture while presenting SilkM
 
 ## Current state
 
-- Upstream baseline: Folia `26.1.2` (`ver/26.1.x`, synced May 17, 2026)
-- Project stage: `v0.1.7-alpha`
+- Upstream baseline: Folia `26.2` (`ver/26.2.x`)
+- Project stage: `v0.1.8-alpha`
 - Java toolchain: JDK 25
 - Build system: Gradle + Paperweight patch workflow
 
@@ -42,7 +42,7 @@ $env:Path="$env:JAVA_HOME\bin;$env:Path"
 Use the runnable Paperclip-style server jar for local testing and releases:
 
 ```powershell
-java -Xms4G -Xmx4G -jar .\silkmc-server\build\libs\silkmc-paperclip-26.1.2.local-SNAPSHOT.jar nogui
+java -Xms4G -Xmx4G -jar .\silkmc-server\build\libs\silkmc-paperclip-26.2.local-SNAPSHOT.jar nogui
 ```
 
 The plain `silkmc-server` jar is a module artifact and is not intended to be launched standalone.
