@@ -20,7 +20,7 @@
 +
 +
      updatingMinecraft {
-         // oldPaperCommit = "7e80cef5198561d0db53406127e5b8bc7af51577"
+         // oldPaperCommit = "d4fe85375af18bfa88f44d7c1e6a61904ae550cc"
      }
 @@ -86,7 +_,19 @@
      }
@@ -49,7 +49,7 @@
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":silkmc-api"))
-     implementation("ca.spottedleaf:concurrentutil:0.0.10")
+     implementation("ca.spottedleaf:leafpile:1.0.0")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
 @@ -171,14 +_,14 @@

@@ -117,7 +117,7 @@ index 0000000000000000000000000000000000000000..e9ca1a15049b0211d10401cb78e953b9
 +    }
 +}
 diff --git a/io/papermc/paper/threadedregions/TickRegionScheduler.java b/io/papermc/paper/threadedregions/TickRegionScheduler.java
-index 4eb564fb10a789422570062cbe77e58f66a2cb07..439c5a222fcf51c9dc5bfef9cdb23f419fffc28c 100644
+index 04034bce53332017db1e12ce7fb970aac0b84b70..5a72fa0d72bfdb927293abe921c57f6ae964a6ec 100644
 --- a/io/papermc/paper/threadedregions/TickRegionScheduler.java
 +++ b/io/papermc/paper/threadedregions/TickRegionScheduler.java
 @@ -42,6 +42,12 @@ public final class TickRegionScheduler {
@@ -168,7 +168,7 @@ index 4eb564fb10a789422570062cbe77e58f66a2cb07..439c5a222fcf51c9dc5bfef9cdb23f41
                  final long cpuEnd = MEASURE_CPU_TIME ? THREAD_MX_BEAN.getCurrentThreadCpuTime() : 0L;
  
 diff --git a/io/papermc/paper/threadedregions/TickRegions.java b/io/papermc/paper/threadedregions/TickRegions.java
-index 1f6434809b07ffdbd467d95da9c193df5a068502..b75293fea5dc029374c1c03361e859f0ddb58e83 100644
+index 17b2e796e7bd423e923a218e76ce4ba5d1044814..a6ab9cb01f4f49f5f44b6ed324fa6d51139aabb6 100644
 --- a/io/papermc/paper/threadedregions/TickRegions.java
 +++ b/io/papermc/paper/threadedregions/TickRegions.java
 @@ -408,9 +408,9 @@ public final class TickRegions implements ThreadedRegionizer.RegionCallbacks<Tic

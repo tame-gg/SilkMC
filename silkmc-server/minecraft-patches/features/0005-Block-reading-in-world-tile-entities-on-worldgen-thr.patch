@@ -7,7 +7,7 @@ The returned TE may be in the world, in which case it is unsafe
 for the current thread to modify or access its contents.
 
 diff --git a/net/minecraft/world/level/chunk/ImposterProtoChunk.java b/net/minecraft/world/level/chunk/ImposterProtoChunk.java
-index 94652b00e18ffcbe02f1ad0578d671e2a1d1d16a..ebfc72d730687945639e131a8e8fe02a965280a2 100644
+index 754c3bb648558d96f9eed990a41480e4366bd72f..3e6fbef8466c02ca93b6eaa39481effbe87a2910 100644
 --- a/net/minecraft/world/level/chunk/ImposterProtoChunk.java
 +++ b/net/minecraft/world/level/chunk/ImposterProtoChunk.java
 @@ -83,6 +83,11 @@ public class ImposterProtoChunk extends ProtoChunk implements ca.spottedleaf.moo

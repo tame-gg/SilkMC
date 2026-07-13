@@ -32,7 +32,7 @@ index 9f4d73fd321f6f0cd19fdd1b63068d2ea6c0816b..08745a35b1ce8cc56d970472088de3cd
                  metrics.addCustomChart(new Metrics.DrilldownPie("java_version", () -> {
                      Map<String, Map<String, Integer>> map = new HashMap<>();
 diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-index 602d3ce2cd16405f35453ce12a207b70312a4a8a..4d2936f6818c38e2844cba78ffad339e93ff29ab 100644
+index ba32d58c33c65b1384baa7616da64f7a4a1f0d1d..30815c8970b1f1c88a3c7bb5fd36efd915f1687d 100644
 --- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
 +++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
 @@ -40,8 +40,8 @@ public class PaperVersionFetcher implements VersionFetcher {
@@ -46,7 +46,7 @@ index 602d3ce2cd16405f35453ce12a207b70312a4a8a..4d2936f6818c38e2844cba78ffad339e
      private static final ServerBuildInfo BUILD_INFO = ServerBuildInfo.buildInfo();
      private static final String USER_AGENT = BUILD_INFO.brandName() + "/" + BUILD_INFO.asString(VERSION_SIMPLE) + " (https://papermc.io)";
      private static final Gson GSON = new Gson();
-@@ -139,7 +139,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -140,7 +140,7 @@ public class PaperVersionFetcher implements VersionFetcher {
          final String currentVersion = PaperVersionFetcher.BUILD_INFO.minecraftVersionId();
  
          try {
@@ -55,7 +55,7 @@ index 602d3ce2cd16405f35453ce12a207b70312a4a8a..4d2936f6818c38e2844cba78ffad339e
              final HttpURLConnection connection = (HttpURLConnection) versionsUrl.openConnection();
              connection.setConnectTimeout(5000);
              connection.setReadTimeout(5000);
-@@ -161,7 +161,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -162,7 +162,7 @@ public class PaperVersionFetcher implements VersionFetcher {
                      }
  
                      try {
@@ -64,7 +64,7 @@ index 602d3ce2cd16405f35453ce12a207b70312a4a8a..4d2936f6818c38e2844cba78ffad339e
                          final HttpURLConnection connection2 = (HttpURLConnection) buildsUrl.openConnection();
                          connection2.setConnectTimeout(5000);
                          connection2.setReadTimeout(5000);
-@@ -194,7 +194,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -200,7 +200,7 @@ public class PaperVersionFetcher implements VersionFetcher {
  
      private static int fetchDistanceFromSiteApi(final int jenkinsBuild) {
          try {
