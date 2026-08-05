@@ -8,19 +8,23 @@ diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/mai
 index 3deca0b4e95609dc95376a86b5cbd525729a1031..6307b90a93b3fa8d697f6036bbcdc0dac5c0409e 100644
 --- a/src/main/java/io/papermc/paper/command/PaperCommands.java
 +++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
  package io.papermc.paper.command;
- 
+
  import com.mojang.brigadier.tree.LiteralCommandNode;
++import gg.tame.silkmc.server.command.RamBarCommand;
 +import gg.tame.silkmc.server.command.SilkMCCommand;
++import gg.tame.silkmc.server.command.TpsBarCommand;
  import io.papermc.paper.command.brigadier.CommandRegistrationFlag;
  import io.papermc.paper.command.brigadier.CommandSourceStack;
  import net.minecraft.server.MinecraftServer;
-@@ -26,6 +27,7 @@ public final class PaperCommands {
+@@ -26,6 +29,9 @@ public final class PaperCommands {
          COMMANDS.put("mspt", new MSPTCommand("mspt"));
          COMMANDS.put("tps", new io.papermc.paper.threadedregions.commands.CommandServerHealth()); // Folia - region threading
          COMMANDS.put("profiler", new io.papermc.paper.threadedregions.commands.CommandProfiler()); // Folia - region threading - profiler
 +        COMMANDS.put("silkmc", new SilkMCCommand());
++        COMMANDS.put("tpsbar", new TpsBarCommand());
++        COMMANDS.put("rambar", new RamBarCommand());
  
          COMMANDS.forEach((s, command) -> {
              server.server.getCommandMap().register(s, "Paper", command);

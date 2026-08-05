@@ -1,9 +1,8 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java
-@@ -1,0 +_,180 @@
+@@ -1,0 +_,166 @@
 +package gg.tame.silkmc.server.command;
 +
-+import gg.tame.silkmc.server.bars.ServerStatusBars;
 +import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
 +import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager;
 +import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Report;
@@ -25,13 +24,13 @@
 +
 +public final class SilkMCCommand extends Command {
 +
-+    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "report", "reload", "bars");
++    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "report", "reload");
 +    private static final int PAGE_SIZE = 8;
 +
 +    public SilkMCCommand() {
 +        super("silkmc");
 +        this.description = "SilkMC operator and compatibility commands";
-+        this.usageMessage = "/silkmc <status|plugins|report|reload|bars>";
++        this.usageMessage = "/silkmc <status|plugins|report|reload>";
 +        this.setPermission("silkmc.command");
 +        final var pluginManager = Bukkit.getPluginManager();
 +        if (pluginManager.getPermission("silkmc.command") == null) {
@@ -54,7 +53,6 @@
 +            case "plugins" -> this.executePlugins(sender, args);
 +            case "report" -> this.executeReport(sender, args);
 +            case "reload" -> this.executeReload(sender);
-+            case "bars" -> this.executeBars(sender);
 +            default -> {
 +                sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
 +                yield false;
@@ -151,18 +149,6 @@
 +        for (final String detail : report.technicalDetails()) {
 +            sender.sendMessage(Component.text(" - " + detail, NamedTextColor.GRAY));
 +        }
-+        return true;
-+    }
-+
-+    private boolean executeBars(final CommandSender sender) {
-+        if (!(sender instanceof org.bukkit.entity.Player player)) {
-+            sender.sendMessage(Component.text("Only players can toggle the server status bars.", NamedTextColor.RED));
-+            return true;
-+        }
-+        final boolean enabled = ServerStatusBars.toggle(player);
-+        sender.sendMessage(Component.text(
-+            enabled ? "SilkMC status bars enabled." : "SilkMC status bars disabled.",
-+            enabled ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
 +        return true;
 +    }
 +

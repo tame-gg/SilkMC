@@ -1,0 +1,44 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/command/RamBarCommand.java
+@@ -1,0 +_,41 @@
++package gg.tame.silkmc.server.command;
++
++import gg.tame.silkmc.server.bars.ServerStatusBars;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import org.bukkit.Bukkit;
++import org.bukkit.command.Command;
++import org.bukkit.command.CommandSender;
++import org.bukkit.entity.Player;
++import org.bukkit.permissions.Permission;
++import org.bukkit.permissions.PermissionDefault;
++
++public final class RamBarCommand extends Command {
++
++    public RamBarCommand() {
++        super("rambar");
++        this.description = "Toggles a live RAM usage boss bar";
++        this.usageMessage = "/rambar";
++        this.setPermission("silkmc.bars");
++        final var pluginManager = Bukkit.getPluginManager();
++        if (pluginManager.getPermission("silkmc.bars") == null) {
++            pluginManager.addPermission(new Permission("silkmc.bars", PermissionDefault.OP));
++        }
++    }
++
++    @Override
++    public boolean execute(final CommandSender sender, final String commandLabel, final String[] args) {
++        if (!this.testPermission(sender)) {
++            return true;
++        }
++        if (!(sender instanceof Player player)) {
++            sender.sendMessage(Component.text("Only players can toggle the RAM bar.", NamedTextColor.RED));
++            return true;
++        }
++        final boolean enabled = ServerStatusBars.toggleRam(player);
++        sender.sendMessage(Component.text(
++            enabled ? "RAM bar enabled." : "RAM bar disabled.",
++            enabled ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
++        return true;
++    }
++}
