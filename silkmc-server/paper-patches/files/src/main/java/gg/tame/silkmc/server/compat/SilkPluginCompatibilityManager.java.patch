@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
-@@ -1,0 +_,437 @@
+@@ -1,0 +_,457 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.configuration.PluginMeta;
@@ -153,7 +153,7 @@
 +        final long now = System.nanoTime();
 +        double worstMspt = 0.0D;
 +        for (final io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData> region : regions) {
-+            final ca.spottedleaf.moonrise.common.time.TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++            final ca.spottedleaf.common.time.TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
 +            if (report == null) {
 +                continue;
 +            }

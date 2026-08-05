@@ -32,7 +32,7 @@ index 08745a35b1ce8cc56d970472088de3cd17b9e43a..32a2e7ff645b5cca596e7869438e1937
                  metrics.addCustomChart(new Metrics.DrilldownPie("java_version", () -> {
                      Map<String, Map<String, Integer>> map = new HashMap<>();
 diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201c24adadc 100644
+index 30815c8970b1f1c88a3c7bb5fd36efd915f1687d..703f75f13823b78df3178bcfd9059175da9837c5 100644
 --- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
 +++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
 @@ -40,8 +40,8 @@ public class PaperVersionFetcher implements VersionFetcher {
@@ -46,7 +46,7 @@ index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201
      private static final ServerBuildInfo BUILD_INFO = ServerBuildInfo.buildInfo();
      private static final String USER_AGENT = BUILD_INFO.brandName() + "/" + BUILD_INFO.asString(VERSION_SIMPLE) + " (https://papermc.io)";
      private static final Gson GSON = new Gson();
-@@ -139,7 +139,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -140,7 +140,7 @@ public class PaperVersionFetcher implements VersionFetcher {
          final String currentVersion = PaperVersionFetcher.BUILD_INFO.minecraftVersionId();
  
          try {
@@ -55,7 +55,7 @@ index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201
              final HttpURLConnection connection = (HttpURLConnection) versionsUrl.openConnection();
              connection.setConnectTimeout(5000);
              connection.setReadTimeout(5000);
-@@ -161,7 +161,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -162,7 +162,7 @@ public class PaperVersionFetcher implements VersionFetcher {
                      }
  
                      try {
@@ -64,7 +64,7 @@ index 4d2936f6818c38e2844cba78ffad339e93ff29ab..51115e96226081fd274d04f3c190e201
                          final HttpURLConnection connection2 = (HttpURLConnection) buildsUrl.openConnection();
                          connection2.setConnectTimeout(5000);
                          connection2.setReadTimeout(5000);
-@@ -194,7 +194,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -200,7 +200,7 @@ public class PaperVersionFetcher implements VersionFetcher {
  
      private static int fetchDistanceFromSiteApi(final int jenkinsBuild) {
          try {
@@ -90,18 +90,18 @@ index 10a0be7a4db1a51579d113d279af7a9effe7f438..09d8d7defb2542b2074d37b7936b9b00
              SharedConstants.getCurrentVersion().name(),
              getManifestAttribute(manifest, ATTRIBUTE_BUILD_NUMBER)
 diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
-index 578102113c2034ed220a4753ee5b69e0270321ce..e3e5b73f835dbcb4e3721e11a50879b0f01e6450 100644
+index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c27a9d6c6 100644
 --- a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
 +++ b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
-@@ -13,6 +13,7 @@ import io.papermc.paper.plugin.provider.classloader.PaperClassLoaderStorage;
+@@ -14,6 +14,7 @@ import io.papermc.paper.plugin.provider.classloader.PaperClassLoaderStorage;
  import io.papermc.paper.plugin.provider.source.DirectoryProviderSource;
  import io.papermc.paper.plugin.provider.source.FileArrayProviderSource;
  import io.papermc.paper.plugin.provider.source.FileProviderSource;
 +import gg.tame.silkmc.server.compat.SilkPluginCompatibility;
  import java.io.File;
- import org.bukkit.Bukkit;
- import org.bukkit.Server;
-@@ -204,13 +205,21 @@ class PaperPluginInstanceManager {
+ import java.io.IOException;
+ import java.nio.file.Files;
+@@ -198,13 +199,21 @@ class PaperPluginInstanceManager {
              } // Paper
  
              try {
@@ -124,9 +124,9 @@ index 578102113c2034ed220a4753ee5b69e0270321ce..e3e5b73f835dbcb4e3721e11a50879b0
              }
  
              // Perhaps abort here, rather than continue going, but as it stands,
-@@ -248,18 +257,6 @@ class PaperPluginInstanceManager {
-             // tries to print after it's source has unloaded (i.e., Guice enhanced errors)
-             this.flushAsyncAppenders();
+@@ -242,18 +251,6 @@ class PaperPluginInstanceManager {
+             // tries to print after its source has unloaded (i.e., Guice enhanced errors)
+             FeatureHooks.flushAsyncAppenders();
  
 -            ClassLoader classLoader = plugin.getClass().getClassLoader();
 -            if (classLoader instanceof ConfiguredPluginClassLoader configuredPluginClassLoader) {
@@ -143,7 +143,7 @@ index 578102113c2034ed220a4753ee5b69e0270321ce..e3e5b73f835dbcb4e3721e11a50879b0
          } catch (Throwable ex) {
              this.handlePluginException("Error occurred (in the plugin loader) while disabling "
                  + pluginName + " (Is it up to date?)", ex, plugin); // Paper
-@@ -324,6 +321,16 @@ class PaperPluginInstanceManager {
+@@ -318,6 +315,16 @@ class PaperPluginInstanceManager {
              this.handlePluginException("Error occurred (in the plugin loader) while removing chunk tickets for " + pluginName + " (Is it up to date?)", ex, plugin); // Paper
          }
  
@@ -186,7 +186,7 @@ index fb7c6621e2805f4339c255f6c2e02c55ff4c502e..f3aa71868fc3b90cef4b7cf34a5f5764
      @Override
      public @NotNull List<String> getProvidedPlugins() {
 diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
-index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..bdb85fcdbd67d59b1282544ad9ea37c333310dc2 100644
+index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..a31c4f72a2a02a812559372efda04a11ec790cb9 100644
 --- a/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
 +++ b/src/main/java/io/papermc/paper/plugin/provider/type/paper/PaperPluginProviderFactory.java
 @@ -25,9 +25,9 @@ class PaperPluginProviderFactory implements PluginTypeFactory<PaperPluginParent,
@@ -203,7 +203,7 @@ index 6369b13e1fcdbdb25dd9d6e4d3bffdedbee4f739..bdb85fcdbd67d59b1282544ad9ea37c3
          Logger jul = PaperPluginLogger.getLogger(configuration);
          ComponentLogger logger = ComponentLogger.logger(jul.getName());
 diff --git a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
-index 6ef0042a355c65262bdb89dcf151bd644653216d..62494de82c0dbd2f464c08e36f202814efa756f0 100644
+index 6ef0042a355c65262bdb89dcf151bd644653216d..9f44122eb545cac85e51c8e107bada00b0e5ac23 100644
 --- a/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
 +++ b/src/main/java/io/papermc/paper/plugin/provider/type/spigot/SpigotPluginProviderFactory.java
 @@ -27,9 +27,9 @@ class SpigotPluginProviderFactory implements PluginTypeFactory<SpigotPluginProvi
@@ -294,10 +294,10 @@ index 14ffbcb66006878eacf310547dad53718f8308eb..55cb7c6ebdf3b0beb7849a8239676757
              } finally {
                  boolean reschedule = false;
 diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
-index d43b1a6e6a8ac2a21b0a048e838115b0403170dd..4a25602d135f8b1661c2573ba44057db716b245a 100644
+index efcb8b97cd685e1243c770bf3e8daf03615abb1d..21958938c50ee1133dde7871c27f9c026933c64a 100644
 --- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
 +++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
-@@ -305,32 +305,21 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
+@@ -303,32 +303,21 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
  
      protected boolean teleport0(Location location, TeleportCause cause, TeleportFlag... flags) {
          // Folia start - region threading
@@ -344,7 +344,7 @@ index d43b1a6e6a8ac2a21b0a048e838115b0403170dd..4a25602d135f8b1661c2573ba44057db
  
      public static net.minecraft.world.entity.Relative deltaRelativeToNMS(TeleportFlag.Relative apiFlag) {
 diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
-index fbf31420cb83287c080c1832bccc167c81526563..11a10994f645d01acd5f21952bda8065fa2a66a1 100644
+index 3d7def71d03d3ec3b3c3565ec07b46a3c1263aab..e43652952cbbfc56905de862464396d78e67da2c 100644
 --- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
 @@ -1335,20 +1335,20 @@ public class CraftPlayer extends CraftHumanEntity implements Player, PluginMessa
@@ -360,7 +360,7 @@ index fbf31420cb83287c080c1832bccc167c81526563..11a10994f645d01acd5f21952bda8065
 -        }
 -        // Minecraft does not currently support teleporting players between worlds with passengers.
 -        // It causes them to be dismounted, and causes weird behavior.
--        if (location.getWorld() != this.getWorld() && !this.getHandle().passengers.isEmpty()) {
+-        if (location.getWorld() != this.getWorld() && this.getHandle().isVehicle()) {
 +        // SilkMC start - compatibility bridge for legacy sync teleport
 +        try {
 +            java.util.concurrent.CompletableFuture<Boolean> future = this.teleportAsync(location, cause, flags);
@@ -535,10 +535,10 @@ index 0000000000000000000000000000000000000000..ef0f1d6647d8118279e7a73372725b48
 +    }
 +}
 diff --git a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
-index c414da018d73baa0a2612772f45899b642ea3a5d..2c7cee09d2162503941ddbc331e8eae4b44a9110 100644
+index 55a095e00bfe15321d8a1d69beb232e9956b0df7..43e20dbee90b94888c3f041390c2b8cf86339c74 100644
 --- a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
 +++ b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
-@@ -376,9 +376,9 @@ public final class CraftMagicNumbers implements UnsafeValues {
+@@ -323,9 +323,9 @@ public final class CraftMagicNumbers implements UnsafeValues {
          }
  
          // Folia start - block plugins not marked as supported
