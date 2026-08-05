@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/bars/ServerStatusBars.java
-@@ -1,0 +_,395 @@
+@@ -1,0 +_,410 @@
 +package gg.tame.silkmc.server.bars;
 +
 +import ca.spottedleaf.common.time.TickData;
@@ -15,6 +15,8 @@
 +import java.io.IOException;
 +import java.io.Reader;
 +import java.io.Writer;
++import java.lang.management.ManagementFactory;
++import java.lang.management.MemoryUsage;
 +import java.nio.charset.StandardCharsets;
 +import java.nio.file.Files;
 +import java.nio.file.Path;
@@ -25,9 +27,8 @@
 +import java.util.concurrent.ConcurrentHashMap;
 +import net.kyori.adventure.bossbar.BossBar;
 +import net.kyori.adventure.text.Component;
-+import net.kyori.adventure.text.format.NamedTextColor;
-+import net.kyori.adventure.text.format.TextColor;
-+import net.kyori.adventure.text.format.TextDecoration;
++import net.kyori.adventure.text.minimessage.MiniMessage;
++import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 +import net.minecraft.server.MinecraftServer;
 +import net.minecraft.server.level.ServerLevel;
 +import org.bukkit.Bukkit;
@@ -40,6 +41,10 @@
 + * {@code /rambar}. Each bar is toggled independently: the TPS bar shows TPS/MSPT/ping and the
 + * RAM bar shows heap usage.
 + *
++ * <p>The bar text, gradient colors, thresholds and byte formatting mirror
++ * <a href="https://github.com/SerlithNetwork/PurpurBars">SerlithNetwork/PurpurBars</a> (which in
++ * turn mirrors Purpur's TPS/RAM bars) so the look matches that project's defaults.
++ *
 + * <p>Per-player opt-in state is persisted to disk ({@code silkmc-status-bars.json}) so that a
 + * player's enabled bars survive disconnect/reconnect and full server restarts. A single shared
 + * daemon thread refreshes every tracked player's active bars once per second and re-shows them
@@ -51,9 +56,17 @@
 +    private static final Logger LOGGER = LogUtils.getLogger();
 +    private static final Gson GSON = new Gson();
 +    private static final Path DATA_FILE = Path.of("silkmc-status-bars.json");
++    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
 +
 +    private static final long REFRESH_INTERVAL_MS = 1000L;
-+    private static final double MB = 1024.0D * 1024.0D;
++
++    // Title templates and gradient text colors, matching PurpurBars' default config.
++    private static final String TPS_TITLE = "<gray>TPS<yellow>:</yellow> <tps> MSPT<yellow>:</yellow> <mspt> Ping<yellow>:</yellow> <ping>ms";
++    private static final String RAM_TITLE = "<gray>Ram<yellow>:</yellow> <used>/<xmx> (<percent>)";
++    private static final String COLOR_GOOD = "<gradient:#55ff55:#00aa00><text></gradient>";
++    private static final String COLOR_MEDIUM = "<gradient:#ffff55:#ffaa00><text></gradient>";
++    private static final String COLOR_LOW = "<gradient:#ff5555:#aa0000><text></gradient>";
++    private static final char[] BYTE_UNITS = {'B', 'K', 'M', 'G', 'T', 'P', 'E'};
 +
 +    // Persisted opt-in state: which players want each bar. Survives reconnects and restarts.
 +    private static final Set<UUID> TPS_ENABLED = ConcurrentHashMap.newKeySet();
@@ -188,7 +201,7 @@
 +        final UUID id = player.getUniqueId();
 +        BossBar bar = TPS_BARS.get(id);
 +        if (bar == null) {
-+            bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++            bar = BossBar.bossBar(Component.empty(), 0.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
 +            player.showBossBar(bar);
 +            TPS_BARS.put(id, bar);
 +        }
@@ -199,7 +212,7 @@
 +        final UUID id = player.getUniqueId();
 +        BossBar bar = RAM_BARS.get(id);
 +        if (bar == null) {
-+            bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++            bar = BossBar.bossBar(Component.empty(), 0.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
 +            player.showBossBar(bar);
 +            RAM_BARS.put(id, bar);
 +        }
@@ -213,39 +226,37 @@
 +        double mspt = 0.0D;
 +        final TickData.TickReportData report = tickReportFor(player, now);
 +        if (report != null) {
-+            tps = report.tpsData().segmentAll().average();
-+            mspt = report.timePerTickData().segmentAll().average() / 1.0E6D;
++            tps = Math.clamp(report.tpsData().segmentAll().average(), 0.0D, 20.0D);
++            mspt = Math.max(0.0D, report.timePerTickData().segmentAll().average() / 1.0E6D);
 +        }
-+        final double clampedTps = Math.max(0.0D, Math.min(20.0D, tps));
-+
 +        final int ping = player.getPing();
-+        bar.name(Component.text()
-+            .append(label("TPS: "))
-+            .append(value(String.format("%.2f", clampedTps), tpsTextColor(clampedTps)))
-+            .append(label(" MSPT: "))
-+            .append(value(String.format("%.2f", mspt), msptTextColor(mspt)))
-+            .append(label(" Ping: "))
-+            .append(value(ping + "ms", pingTextColor(ping)))
-+            .build());
-+        bar.progress((float) (clampedTps / 20.0D));
-+        bar.color(tpsBarColor(clampedTps));
++
++        // Progress + bar color follow PurpurBars' default MSPT fill mode.
++        bar.progress(clamp01((float) (mspt / 50.0D)));
++        bar.color(tpsBarColor(mspt));
++        bar.name(MINI_MESSAGE.deserialize(TPS_TITLE,
++            Placeholder.component("tps", coloredValue(tpsTier(tps), String.format("%.2f", tps))),
++            Placeholder.component("mspt", coloredValue(msptTier(mspt), String.format("%.2f", mspt))),
++            Placeholder.component("ping", coloredValue(pingTier(ping), String.format("%d", ping)))));
 +    }
 +
 +    private static void updateRam(final Player player, final BossBar bar) {
-+        final Runtime runtime = Runtime.getRuntime();
-+        final long maxBytes = runtime.maxMemory();
-+        final long usedBytes = runtime.totalMemory() - runtime.freeMemory();
-+        final long usedMb = Math.round(usedBytes / MB);
-+        final long maxMb = Math.round(maxBytes / MB);
-+        final int percent = maxMb <= 0L ? 0 : (int) Math.round((usedMb * 100.0D) / maxMb);
++        final MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
++        final long used = heap.getUsed();
++        final long xmx = heap.getMax();
++        final float percent = xmx <= 0L ? 0.0F : clamp01((float) ((double) used / xmx));
++        final String tier = ramTier(percent);
 +
-+        bar.name(Component.text()
-+            .append(label("Ram: "))
-+            .append(value(usedMb + "/" + maxMb, ramTextColor(percent)))
-+            .append(label(" (" + percent + "%)"))
-+            .build());
-+        bar.progress(clamp01((float) percent / 100.0F));
++        bar.progress(percent);
 +        bar.color(ramBarColor(percent));
++        bar.name(MINI_MESSAGE.deserialize(RAM_TITLE,
++            Placeholder.component("used", coloredValue(tier, formatBytes(used))),
++            Placeholder.component("xmx", coloredValue(tier, formatBytes(xmx))),
++            Placeholder.parsed("percent", String.format("%d%%", (int) (percent * 100)))));
++    }
++
++    private static Component coloredValue(final String tierTemplate, final String text) {
++        return MINI_MESSAGE.deserialize(tierTemplate, Placeholder.unparsed("text", text));
 +    }
 +
 +    private static TickData.TickReportData tickReportFor(final Player player, final long now) {
@@ -324,75 +335,79 @@
 +        }
 +    }
 +
-+    private static Component label(final String text) {
-+        return Component.text(text, NamedTextColor.YELLOW, TextDecoration.BOLD);
-+    }
-+
-+    private static Component value(final String text, final TextColor color) {
-+        return Component.text(text, color, TextDecoration.BOLD);
-+    }
-+
 +    private static float clamp01(final float value) {
 +        return Math.max(0.0F, Math.min(1.0F, value));
 +    }
 +
-+    private static TextColor tpsTextColor(final double tps) {
-+        if (tps >= 18.0D) {
-+            return NamedTextColor.GREEN;
++    private static String tpsTier(final double tps) {
++        if (tps >= 19.0D) {
++            return COLOR_GOOD;
 +        }
 +        if (tps >= 15.0D) {
-+            return NamedTextColor.YELLOW;
++            return COLOR_MEDIUM;
 +        }
-+        return NamedTextColor.RED;
++        return COLOR_LOW;
 +    }
 +
-+    private static BossBar.Color tpsBarColor(final double tps) {
-+        if (tps >= 18.0D) {
-+            return BossBar.Color.GREEN;
++    private static String msptTier(final double mspt) {
++        if (mspt < 40.0D) {
++            return COLOR_GOOD;
 +        }
-+        if (tps >= 15.0D) {
-+            return BossBar.Color.YELLOW;
++        if (mspt < 50.0D) {
++            return COLOR_MEDIUM;
 +        }
-+        return BossBar.Color.RED;
++        return COLOR_LOW;
 +    }
 +
-+    private static TextColor msptTextColor(final double mspt) {
-+        if (mspt <= 35.0D) {
-+            return NamedTextColor.GREEN;
-+        }
-+        if (mspt <= 50.0D) {
-+            return NamedTextColor.YELLOW;
-+        }
-+        return NamedTextColor.RED;
-+    }
-+
-+    private static TextColor pingTextColor(final int ping) {
++    private static String pingTier(final int ping) {
 +        if (ping < 100) {
-+            return NamedTextColor.GREEN;
++            return COLOR_GOOD;
 +        }
-+        if (ping < 250) {
-+            return NamedTextColor.YELLOW;
++        if (ping < 200) {
++            return COLOR_MEDIUM;
 +        }
-+        return NamedTextColor.RED;
++        return COLOR_LOW;
 +    }
 +
-+    private static TextColor ramTextColor(final int percent) {
-+        if (percent < 70) {
-+            return NamedTextColor.GREEN;
++    private static String ramTier(final float percent) {
++        if (percent < 0.6F) {
++            return COLOR_GOOD;
 +        }
-+        if (percent < 85) {
-+            return NamedTextColor.YELLOW;
++        if (percent < 0.85F) {
++            return COLOR_MEDIUM;
 +        }
-+        return NamedTextColor.RED;
++        return COLOR_LOW;
 +    }
 +
-+    private static BossBar.Color ramBarColor(final int percent) {
-+        if (percent < 70) {
++    private static BossBar.Color tpsBarColor(final double mspt) {
++        if (mspt < 40.0D) {
 +            return BossBar.Color.GREEN;
 +        }
-+        if (percent < 85) {
++        if (mspt < 50.0D) {
 +            return BossBar.Color.YELLOW;
 +        }
 +        return BossBar.Color.RED;
++    }
++
++    private static BossBar.Color ramBarColor(final float percent) {
++        if (percent < 0.5F) {
++            return BossBar.Color.GREEN;
++        }
++        if (percent < 0.75F) {
++            return BossBar.Color.YELLOW;
++        }
++        return BossBar.Color.RED;
++    }
++
++    // Mirrors PurpurBars' Utils.formatBytes: base-1024 units, one decimal at MB and above.
++    private static String formatBytes(final long bytes) {
++        if (bytes < 1024L) {
++            return String.format("%dB", bytes);
++        }
++        final int z = (63 - Long.numberOfLeadingZeros(bytes)) / 10;
++        if (z > 2) {
++            return String.format("%.1f%c", ((float) bytes) / (1L << (z * 10)), BYTE_UNITS[z]);
++        }
++        return String.format("%d%c", bytes / (1L << (z * 10)), BYTE_UNITS[z]);
 +    }
 +}
