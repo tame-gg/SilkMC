@@ -1,0 +1,234 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/bars/ServerStatusBars.java
+@@ -1,0 +_,231 @@
++package gg.tame.silkmc.server.bars;
++
++import io.papermc.paper.threadedregions.RegionizedServer;
++import io.papermc.paper.threadedregions.ThreadedRegionizer;
++import io.papermc.paper.threadedregions.TickData;
++import io.papermc.paper.threadedregions.TickRegions;
++import java.util.Map;
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import net.kyori.adventure.bossbar.BossBar;
++import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.format.NamedTextColor;
++import net.kyori.adventure.text.format.TextColor;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import org.bukkit.Bukkit;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.entity.Player;
++
++/**
++ * Renders live server-health boss bars (TPS/MSPT/ping and RAM usage) for players who opt in
++ * through {@code /silkmc bars}. A single shared daemon thread refreshes every tracked player's
++ * bars once per second, reading region-local tick data where available and falling back to the
++ * global region schedule. This is intended as a lightweight testing/observability aid.
++ */
++public final class ServerStatusBars {
++
++    private static final long REFRESH_INTERVAL_MS = 1000L;
++    private static final double MB = 1024.0D * 1024.0D;
++
++    private static final Map<UUID, Bars> ACTIVE = new ConcurrentHashMap<>();
++    private static volatile Thread updateThread;
++
++    private ServerStatusBars() {
++    }
++
++    /**
++     * Toggles the status bars for the given player.
++     *
++     * @param player the player to toggle bars for
++     * @return {@code true} if the bars are now shown, {@code false} if they were hidden
++     */
++    public static boolean toggle(final Player player) {
++        final UUID id = player.getUniqueId();
++        final Bars existing = ACTIVE.remove(id);
++        if (existing != null) {
++            player.hideBossBar(existing.tps);
++            player.hideBossBar(existing.ram);
++            return false;
++        }
++
++        final BossBar tps = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++        final BossBar ram = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++        try {
++            update(player, tps, ram);
++        } catch (final Throwable ignored) {
++            // Fall back to the placeholder bars; the refresh loop will populate them shortly.
++        }
++        player.showBossBar(tps);
++        player.showBossBar(ram);
++        ACTIVE.put(id, new Bars(tps, ram));
++        ensureThread();
++        return true;
++    }
++
++    private static synchronized void ensureThread() {
++        if (updateThread != null) {
++            return;
++        }
++        final Thread thread = new Thread(ServerStatusBars::runLoop, "SilkMC Status Bars");
++        thread.setDaemon(true);
++        updateThread = thread;
++        thread.start();
++    }
++
++    private static void runLoop() {
++        for (;;) {
++            try {
++                Thread.sleep(REFRESH_INTERVAL_MS);
++            } catch (final InterruptedException ignored) {
++                return;
++            }
++
++            final MinecraftServer server = MinecraftServer.getServer();
++            if (server == null || server.hasStopped()) {
++                continue;
++            }
++
++            for (final Map.Entry<UUID, Bars> entry : ACTIVE.entrySet()) {
++                final Player player = Bukkit.getPlayer(entry.getKey());
++                if (player == null || !player.isOnline()) {
++                    final Bars removed = ACTIVE.remove(entry.getKey());
++                    if (player != null && removed != null) {
++                        player.hideBossBar(removed.tps);
++                        player.hideBossBar(removed.ram);
++                    }
++                    continue;
++                }
++                try {
++                    update(player, entry.getValue().tps, entry.getValue().ram);
++                } catch (final Throwable ignored) {
++                    // Never let a single player's failure stop the refresh loop.
++                }
++            }
++        }
++    }
++
++    private static void update(final Player player, final BossBar tpsBar, final BossBar ramBar) {
++        final long now = System.nanoTime();
++
++        double tps = 20.0D;
++        double mspt = 0.0D;
++        final TickData.TickReportData report = tickReportFor(player, now);
++        if (report != null) {
++            tps = report.tpsData().segmentAll().average();
++            mspt = report.timePerTickData().segmentAll().average() / 1.0E6D;
++        }
++        final double clampedTps = Math.max(0.0D, Math.min(20.0D, tps));
++
++        tpsBar.name(Component.text()
++            .append(Component.text("TPS: ", NamedTextColor.GRAY))
++            .append(Component.text(String.format("%.2f", clampedTps), tpsTextColor(clampedTps)))
++            .append(Component.text("  MSPT: ", NamedTextColor.GRAY))
++            .append(Component.text(String.format("%.2f", mspt), msptTextColor(mspt)))
++            .append(Component.text("  Ping: ", NamedTextColor.GRAY))
++            .append(Component.text(player.getPing() + "ms", NamedTextColor.AQUA))
++            .build());
++        tpsBar.progress((float) (clampedTps / 20.0D));
++        tpsBar.color(tpsBarColor(clampedTps));
++
++        final Runtime runtime = Runtime.getRuntime();
++        final long maxBytes = runtime.maxMemory();
++        final long usedBytes = runtime.totalMemory() - runtime.freeMemory();
++        final long usedMb = Math.round(usedBytes / MB);
++        final long maxMb = Math.round(maxBytes / MB);
++        final int percent = maxMb <= 0L ? 0 : (int) Math.round((usedMb * 100.0D) / maxMb);
++
++        ramBar.name(Component.text()
++            .append(Component.text("Ram: ", NamedTextColor.GRAY))
++            .append(Component.text(usedMb + "/" + maxMb, ramTextColor(percent)))
++            .append(Component.text(" (" + percent + "%)", NamedTextColor.GRAY))
++            .build());
++        ramBar.progress(clamp01((float) percent / 100.0F));
++        ramBar.color(ramBarColor(percent));
++    }
++
++    private static TickData.TickReportData tickReportFor(final Player player, final long now) {
++        try {
++            final ServerLevel level = ((CraftWorld) player.getWorld()).getHandle();
++            final int chunkX = player.getLocation().getBlockX() >> 4;
++            final int chunkZ = player.getLocation().getBlockZ() >> 4;
++            final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region =
++                level.regioniser.getRegionAtSynchronised(chunkX, chunkZ);
++            if (region != null) {
++                return region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++            }
++        } catch (final Throwable ignored) {
++            // Fall through to the global tick data below.
++        }
++        try {
++            return RegionizedServer.getGlobalTickData().getTickReport5s(now);
++        } catch (final Throwable ignored) {
++            return null;
++        }
++    }
++
++    private static float clamp01(final float value) {
++        return Math.max(0.0F, Math.min(1.0F, value));
++    }
++
++    private static TextColor tpsTextColor(final double tps) {
++        if (tps >= 18.0D) {
++            return NamedTextColor.GREEN;
++        }
++        if (tps >= 15.0D) {
++            return NamedTextColor.YELLOW;
++        }
++        return NamedTextColor.RED;
++    }
++
++    private static BossBar.Color tpsBarColor(final double tps) {
++        if (tps >= 18.0D) {
++            return BossBar.Color.GREEN;
++        }
++        if (tps >= 15.0D) {
++            return BossBar.Color.YELLOW;
++        }
++        return BossBar.Color.RED;
++    }
++
++    private static TextColor msptTextColor(final double mspt) {
++        if (mspt <= 35.0D) {
++            return NamedTextColor.GREEN;
++        }
++        if (mspt <= 50.0D) {
++            return NamedTextColor.YELLOW;
++        }
++        return NamedTextColor.RED;
++    }
++
++    private static TextColor ramTextColor(final int percent) {
++        if (percent < 70) {
++            return NamedTextColor.GREEN;
++        }
++        if (percent < 85) {
++            return NamedTextColor.YELLOW;
++        }
++        return NamedTextColor.RED;
++    }
++
++    private static BossBar.Color ramBarColor(final int percent) {
++        if (percent < 70) {
++            return BossBar.Color.GREEN;
++        }
++        if (percent < 85) {
++            return BossBar.Color.YELLOW;
++        }
++        return BossBar.Color.RED;
++    }
++
++    private static final class Bars {
++
++        private final BossBar tps;
++        private final BossBar ram;
++
++        private Bars(final BossBar tps, final BossBar ram) {
++            this.tps = tps;
++            this.ram = ram;
++        }
++    }
++}
