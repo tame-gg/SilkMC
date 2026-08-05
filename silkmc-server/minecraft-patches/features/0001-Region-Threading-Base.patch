@@ -7527,12 +7527,12 @@ index a882caec9d4ad21605eaafeb2872786eef5c3031..1e1cb2aaec7037d16f3e91092e013c06
 -            runSync(player, bukkit, root);
 -        });
 +        // Folia start - region threading
-+        player.getBukkitEntity().taskScheduler.schedule((ServerPlayer updatedPlayer) -> {
++        player.getBukkitEntity().taskScheduler.scheduleOrExecute((ServerPlayer updatedPlayer) -> {
 +            runSync(updatedPlayer, bukkit, root);
-+        }, null, 1L);
++        });
 +        // Folia end - region threading
      }
- 
+
      private void runSync(ServerPlayer player, java.util.Collection<String> bukkit, RootCommandNode<CommandSourceStack> root) {
 diff --git a/net/minecraft/core/dispenser/DispenseItemBehavior.java b/net/minecraft/core/dispenser/DispenseItemBehavior.java
 index 751232d09f5570a23223356a6572090e7d61139b..4904aaa36e46fdb2af5f64a7202ee818f8108869 100644
