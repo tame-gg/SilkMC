@@ -24,6 +24,7 @@ public final class SilkPluginCompatibility {
     private static final File CONFIG_FILE = new File("silkmc-compatibility.yml");
     private static final File OVERRIDES_FILE = new File("silkmc-plugin-overrides.yml");
     private static final Set<String> WARNED_PLUGINS = ConcurrentHashMap.newKeySet();
+    private static final Set<String> ENABLE_FAILED_PLUGINS = ConcurrentHashMap.newKeySet();
     private static final ThreadLocal<LifecycleContext> ACTIVE_PLUGIN_LIFECYCLE = new ThreadLocal<>();
     private static volatile Policy cachedPolicy;
 
@@ -91,6 +92,49 @@ public final class SilkPluginCompatibility {
         return policy().disableIncompatiblePlugins;
     }
 
+    /**
+     * Records that a plugin threw while enabling. Paper immediately disables such a plugin, and a
+     * half-initialised plugin very often throws again from its own {@code onDisable} (typically an
+     * NPE on a field its {@code onEnable} never set). Flagging the plugin here lets
+     * {@link #handleDisableFailure(Logger, Plugin, Throwable)} recognise that follow-up failure as a
+     * cascade rather than an independent problem.
+     */
+    public static void markEnableFailed(final Plugin plugin) {
+        if (plugin != null) {
+            ENABLE_FAILED_PLUGINS.add(normalizePluginName(plugin.getPluginMeta().getDisplayName()));
+        }
+    }
+
+    /**
+     * Handles an exception thrown from a plugin's {@code onDisable} while SilkMC tears the plugin back
+     * down after a failed enable. When the disable is a direct cascade of that failed enable, the
+     * plugin was only ever half-initialised, so the shutdown exception is a side effect of the enable
+     * failure that was already reported — not something the operator can act on. In that case SilkMC
+     * logs a single concise, operator-facing line and keeps the raw stack trace at {@code FINE} so the
+     * console stays clean and the server keeps running.
+     *
+     * @return {@code true} if SilkMC handled the failure and the caller should not log it again;
+     *         {@code false} if the caller should log the failure normally.
+     */
+    public static boolean handleDisableFailure(final Logger logger, final Plugin plugin, final Throwable throwable) {
+        if (plugin == null) {
+            return false;
+        }
+        final boolean cascade = ENABLE_FAILED_PLUGINS.remove(normalizePluginName(plugin.getPluginMeta().getDisplayName()));
+        if (!cascade) {
+            return false;
+        }
+        final String name = plugin.getPluginMeta().getDisplayName();
+        logger.warning("Plugin '" + name + "' failed to shut down cleanly after it failed to enable. "
+            + "This is a side effect of the earlier enable failure (the plugin never finished initialising), "
+            + "it is safe to ignore, and SilkMC has disabled the plugin and kept the server running. "
+            + "If you need this plugin, update it to a build that supports this SilkMC/Minecraft version.");
+        if (policy().logCompatibilityStacktraces) {
+            logger.log(Level.FINE, "Cascading disable failure details for '" + name + "'", throwable);
+        }
+        return true;
+    }
+
     public static boolean requiresExplicitDeclaration() {
         return policy().mode == UnsupportedPluginMode.REQUIRE_DECLARATION;
     }
@@ -112,6 +156,7 @@ public final class SilkPluginCompatibility {
             cachedPolicy = loadPolicy();
         }
         WARNED_PLUGINS.clear();
+        ENABLE_FAILED_PLUGINS.clear();
         SilkPluginCompatibilityManager.refreshReports();
     }
 

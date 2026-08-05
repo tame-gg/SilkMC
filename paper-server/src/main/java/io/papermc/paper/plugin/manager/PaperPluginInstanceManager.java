@@ -209,6 +209,9 @@ class PaperPluginInstanceManager {
                     this.server.getLogger().log(Level.SEVERE, "Error occurred while enabling " + plugin.getPluginMeta().getDisplayName() + " (Is it up to date?)", ex);
                 }
                 // Paper start - Disable plugins that fail to load
+                // SilkMC start - flag the failed enable so the cascading disable can be softened
+                SilkPluginCompatibility.markEnableFailed(jPlugin);
+                // SilkMC end
                 this.server.getPluginManager().disablePlugin(jPlugin);
                 return;
                 // Paper end
@@ -244,7 +247,11 @@ class PaperPluginInstanceManager {
             try {
                 javaPlugin.setEnabled(false);
             } catch (Throwable ex) {
-                this.server.getLogger().log(Level.SEVERE, "Error occurred while disabling " + pluginName, ex);
+                // SilkMC start - soften cascading disable failures from plugins that never finished enabling
+                if (!SilkPluginCompatibility.handleDisableFailure(this.server.getLogger(), plugin, ex)) {
+                    this.server.getLogger().log(Level.SEVERE, "Error occurred while disabling " + pluginName, ex);
+                }
+                // SilkMC end
             }
 
             // Flush async appender before unloading, avoids issues when a log message with class context

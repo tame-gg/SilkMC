@@ -101,7 +101,7 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
  import java.io.File;
  import java.io.IOException;
  import java.nio.file.Files;
-@@ -198,13 +199,21 @@ class PaperPluginInstanceManager {
+@@ -198,13 +199,24 @@ class PaperPluginInstanceManager {
              } // Paper
  
              try {
@@ -116,6 +116,9 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
 +                    this.server.getLogger().log(Level.SEVERE, "Error occurred while enabling " + plugin.getPluginMeta().getDisplayName() + " (Is it up to date?)", ex);
 +                }
                  // Paper start - Disable plugins that fail to load
++                // SilkMC start - flag the failed enable so the cascading disable can be softened
++                SilkPluginCompatibility.markEnableFailed(jPlugin);
++                // SilkMC end
                  this.server.getPluginManager().disablePlugin(jPlugin);
                  return;
                  // Paper end
@@ -124,6 +127,19 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
              }
  
              // Perhaps abort here, rather than continue going, but as it stands,
+@@ -235,7 +247,11 @@ class PaperPluginInstanceManager {
+             try {
+                 javaPlugin.setEnabled(false);
+             } catch (Throwable ex) {
+-                this.server.getLogger().log(Level.SEVERE, "Error occurred while disabling " + pluginName, ex);
++                // SilkMC start - soften cascading disable failures from plugins that never finished enabling
++                if (!SilkPluginCompatibility.handleDisableFailure(this.server.getLogger(), plugin, ex)) {
++                    this.server.getLogger().log(Level.SEVERE, "Error occurred while disabling " + pluginName, ex);
++                }
++                // SilkMC end
+             }
+ 
+             // Flush async appender before unloading, avoids issues when a log message with class context
 @@ -242,18 +251,6 @@ class PaperPluginInstanceManager {
              // tries to print after its source has unloaded (i.e., Guice enhanced errors)
              FeatureHooks.flushAsyncAppenders();
