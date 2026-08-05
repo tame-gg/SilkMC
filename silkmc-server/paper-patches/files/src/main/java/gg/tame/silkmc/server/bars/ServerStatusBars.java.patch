@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/bars/ServerStatusBars.java
-@@ -1,0 +_,264 @@
+@@ -1,0 +_,284 @@
 +package gg.tame.silkmc.server.bars;
 +
 +import ca.spottedleaf.common.time.TickData;
@@ -16,6 +16,7 @@
 +import net.kyori.adventure.text.Component;
 +import net.kyori.adventure.text.format.NamedTextColor;
 +import net.kyori.adventure.text.format.TextColor;
++import net.kyori.adventure.text.format.TextDecoration;
 +import net.minecraft.server.MinecraftServer;
 +import net.minecraft.server.level.ServerLevel;
 +import org.bukkit.Bukkit;
@@ -162,13 +163,14 @@
 +        }
 +        final double clampedTps = Math.max(0.0D, Math.min(20.0D, tps));
 +
++        final int ping = player.getPing();
 +        bar.name(Component.text()
-+            .append(Component.text("TPS: ", NamedTextColor.GRAY))
-+            .append(Component.text(String.format("%.2f", clampedTps), tpsTextColor(clampedTps)))
-+            .append(Component.text("  MSPT: ", NamedTextColor.GRAY))
-+            .append(Component.text(String.format("%.2f", mspt), msptTextColor(mspt)))
-+            .append(Component.text("  Ping: ", NamedTextColor.GRAY))
-+            .append(Component.text(player.getPing() + "ms", NamedTextColor.AQUA))
++            .append(label("TPS: "))
++            .append(value(String.format("%.2f", clampedTps), tpsTextColor(clampedTps)))
++            .append(label(" MSPT: "))
++            .append(value(String.format("%.2f", mspt), msptTextColor(mspt)))
++            .append(label(" Ping: "))
++            .append(value(ping + "ms", pingTextColor(ping)))
 +            .build());
 +        bar.progress((float) (clampedTps / 20.0D));
 +        bar.color(tpsBarColor(clampedTps));
@@ -183,9 +185,9 @@
 +        final int percent = maxMb <= 0L ? 0 : (int) Math.round((usedMb * 100.0D) / maxMb);
 +
 +        bar.name(Component.text()
-+            .append(Component.text("Ram: ", NamedTextColor.GRAY))
-+            .append(Component.text(usedMb + "/" + maxMb, ramTextColor(percent)))
-+            .append(Component.text(" (" + percent + "%)", NamedTextColor.GRAY))
++            .append(label("Ram: "))
++            .append(value(usedMb + "/" + maxMb, ramTextColor(percent)))
++            .append(label(" (" + percent + "%)"))
 +            .build());
 +        bar.progress(clamp01((float) percent / 100.0F));
 +        bar.color(ramBarColor(percent));
@@ -213,6 +215,24 @@
 +
 +    private static float clamp01(final float value) {
 +        return Math.max(0.0F, Math.min(1.0F, value));
++    }
++
++    private static Component label(final String text) {
++        return Component.text(text, NamedTextColor.YELLOW, TextDecoration.BOLD);
++    }
++
++    private static Component value(final String text, final TextColor color) {
++        return Component.text(text, color, TextDecoration.BOLD);
++    }
++
++    private static TextColor pingTextColor(final int ping) {
++        if (ping < 100) {
++            return NamedTextColor.GREEN;
++        }
++        if (ping < 250) {
++            return NamedTextColor.YELLOW;
++        }
++        return NamedTextColor.RED;
 +    }
 +
 +    private static TextColor tpsTextColor(final double tps) {
