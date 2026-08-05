@@ -1,12 +1,23 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/bars/ServerStatusBars.java
-@@ -1,0 +_,284 @@
+@@ -1,0 +_,395 @@
 +package gg.tame.silkmc.server.bars;
 +
 +import ca.spottedleaf.common.time.TickData;
++import com.google.gson.Gson;
++import com.google.gson.JsonArray;
++import com.google.gson.JsonElement;
++import com.google.gson.JsonObject;
++import com.mojang.logging.LogUtils;
 +import io.papermc.paper.threadedregions.RegionizedServer;
 +import io.papermc.paper.threadedregions.ThreadedRegionizer;
 +import io.papermc.paper.threadedregions.TickRegions;
++import java.io.IOException;
++import java.io.Reader;
++import java.io.Writer;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
 +import java.util.HashSet;
 +import java.util.Map;
 +import java.util.Set;
@@ -22,75 +33,96 @@
 +import org.bukkit.Bukkit;
 +import org.bukkit.craftbukkit.CraftWorld;
 +import org.bukkit.entity.Player;
++import org.slf4j.Logger;
 +
 +/**
 + * Renders live server-health boss bars for players who opt in through {@code /tpsbar} and
 + * {@code /rambar}. Each bar is toggled independently: the TPS bar shows TPS/MSPT/ping and the
-+ * RAM bar shows heap usage. A single shared daemon thread refreshes every tracked player's
-+ * active bars once per second, reading region-local tick data where available and falling back
++ * RAM bar shows heap usage.
++ *
++ * <p>Per-player opt-in state is persisted to disk ({@code silkmc-status-bars.json}) so that a
++ * player's enabled bars survive disconnect/reconnect and full server restarts. A single shared
++ * daemon thread refreshes every tracked player's active bars once per second and re-shows them
++ * to players as they (re)join, reading region-local tick data where available and falling back
 + * to the global region schedule. This is intended as a lightweight testing/observability aid.
 + */
 +public final class ServerStatusBars {
 +
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final Gson GSON = new Gson();
++    private static final Path DATA_FILE = Path.of("silkmc-status-bars.json");
++
 +    private static final long REFRESH_INTERVAL_MS = 1000L;
 +    private static final double MB = 1024.0D * 1024.0D;
 +
++    // Persisted opt-in state: which players want each bar. Survives reconnects and restarts.
++    private static final Set<UUID> TPS_ENABLED = ConcurrentHashMap.newKeySet();
++    private static final Set<UUID> RAM_ENABLED = ConcurrentHashMap.newKeySet();
++
++    // Transient boss bars currently shown to online players; rebuilt on (re)join.
 +    private static final Map<UUID, BossBar> TPS_BARS = new ConcurrentHashMap<>();
 +    private static final Map<UUID, BossBar> RAM_BARS = new ConcurrentHashMap<>();
++
++    private static final Object IO_LOCK = new Object();
 +    private static volatile Thread updateThread;
++    private static volatile boolean loaded;
 +
 +    private ServerStatusBars() {
 +    }
 +
 +    /**
-+     * Toggles the TPS/MSPT/ping bar for the given player.
++     * Loads persisted opt-in state and starts the refresher. Invoked once during server startup
++     * (from command registration), so persisted bars are restored on every reboot.
++     */
++    public static void init() {
++        load();
++        ensureThread();
++    }
++
++    /**
++     * Toggles the TPS/MSPT/ping bar for the given player and persists the change.
 +     *
 +     * @param player the player to toggle the bar for
 +     * @return {@code true} if the bar is now shown, {@code false} if it was hidden
 +     */
 +    public static boolean toggleTps(final Player player) {
-+        final UUID id = player.getUniqueId();
-+        final BossBar existing = TPS_BARS.remove(id);
-+        if (existing != null) {
-+            player.hideBossBar(existing);
-+            return false;
-+        }
-+
-+        final BossBar bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
-+        try {
-+            updateTps(player, bar);
-+        } catch (final Throwable ignored) {
-+            // The refresh loop will populate the bar shortly.
-+        }
-+        player.showBossBar(bar);
-+        TPS_BARS.put(id, bar);
-+        ensureThread();
-+        return true;
++        final boolean enabled = toggle(player, TPS_ENABLED, TPS_BARS, ServerStatusBars::showTps);
++        save();
++        return enabled;
 +    }
 +
 +    /**
-+     * Toggles the RAM usage bar for the given player.
++     * Toggles the RAM usage bar for the given player and persists the change.
 +     *
 +     * @param player the player to toggle the bar for
 +     * @return {@code true} if the bar is now shown, {@code false} if it was hidden
 +     */
 +    public static boolean toggleRam(final Player player) {
++        final boolean enabled = toggle(player, RAM_ENABLED, RAM_BARS, ServerStatusBars::showRam);
++        save();
++        return enabled;
++    }
++
++    private interface BarRenderer {
++        void show(Player player);
++    }
++
++    private static boolean toggle(final Player player, final Set<UUID> enabled, final Map<UUID, BossBar> bars, final BarRenderer renderer) {
 +        final UUID id = player.getUniqueId();
-+        final BossBar existing = RAM_BARS.remove(id);
-+        if (existing != null) {
-+            player.hideBossBar(existing);
++        if (enabled.remove(id)) {
++            final BossBar existing = bars.remove(id);
++            if (existing != null) {
++                player.hideBossBar(existing);
++            }
 +            return false;
 +        }
-+
-+        final BossBar bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
-+        try {
-+            updateRam(player, bar);
-+        } catch (final Throwable ignored) {
-+            // The refresh loop will populate the bar shortly.
-+        }
-+        player.showBossBar(bar);
-+        RAM_BARS.put(id, bar);
++        enabled.add(id);
 +        ensureThread();
++        try {
++            renderer.show(player);
++        } catch (final Throwable ignored) {
++            // The refresh loop will show the bar shortly.
++        }
 +        return true;
 +    }
 +
@@ -117,38 +149,61 @@
 +                continue;
 +            }
 +
-+            final Set<UUID> ids = new HashSet<>(TPS_BARS.keySet());
-+            ids.addAll(RAM_BARS.keySet());
++            try {
++                cleanup(TPS_BARS, TPS_ENABLED);
++                cleanup(RAM_BARS, RAM_ENABLED);
 +
-+            for (final UUID id : ids) {
-+                final Player player = Bukkit.getPlayer(id);
-+                if (player == null || !player.isOnline()) {
-+                    final BossBar tps = TPS_BARS.remove(id);
-+                    final BossBar ram = RAM_BARS.remove(id);
-+                    if (player != null) {
-+                        if (tps != null) {
-+                            player.hideBossBar(tps);
-+                        }
-+                        if (ram != null) {
-+                            player.hideBossBar(ram);
-+                        }
++                for (final UUID id : new HashSet<>(TPS_ENABLED)) {
++                    final Player player = Bukkit.getPlayer(id);
++                    if (player != null && player.isOnline()) {
++                        showTps(player);
 +                    }
-+                    continue;
 +                }
-+                try {
-+                    final BossBar tps = TPS_BARS.get(id);
-+                    if (tps != null) {
-+                        updateTps(player, tps);
++                for (final UUID id : new HashSet<>(RAM_ENABLED)) {
++                    final Player player = Bukkit.getPlayer(id);
++                    if (player != null && player.isOnline()) {
++                        showRam(player);
 +                    }
-+                    final BossBar ram = RAM_BARS.get(id);
-+                    if (ram != null) {
-+                        updateRam(player, ram);
-+                    }
-+                } catch (final Throwable ignored) {
-+                    // Never let a single player's failure stop the refresh loop.
++                }
++            } catch (final Throwable throwable) {
++                LOGGER.warn("Failed to refresh SilkMC status bars", throwable);
++            }
++        }
++    }
++
++    // Hides and drops any transient bar whose player has left or who has toggled the bar off.
++    private static void cleanup(final Map<UUID, BossBar> bars, final Set<UUID> enabled) {
++        for (final UUID id : new HashSet<>(bars.keySet())) {
++            final Player player = Bukkit.getPlayer(id);
++            if (!enabled.contains(id) || player == null || !player.isOnline()) {
++                final BossBar bar = bars.remove(id);
++                if (bar != null && player != null) {
++                    player.hideBossBar(bar);
 +                }
 +            }
 +        }
++    }
++
++    private static void showTps(final Player player) {
++        final UUID id = player.getUniqueId();
++        BossBar bar = TPS_BARS.get(id);
++        if (bar == null) {
++            bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++            player.showBossBar(bar);
++            TPS_BARS.put(id, bar);
++        }
++        updateTps(player, bar);
++    }
++
++    private static void showRam(final Player player) {
++        final UUID id = player.getUniqueId();
++        BossBar bar = RAM_BARS.get(id);
++        if (bar == null) {
++            bar = BossBar.bossBar(Component.empty(), 1.0F, BossBar.Color.GREEN, BossBar.Overlay.PROGRESS);
++            player.showBossBar(bar);
++            RAM_BARS.put(id, bar);
++        }
++        updateRam(player, bar);
 +    }
 +
 +    private static void updateTps(final Player player, final BossBar bar) {
@@ -213,8 +268,60 @@
 +        }
 +    }
 +
-+    private static float clamp01(final float value) {
-+        return Math.max(0.0F, Math.min(1.0F, value));
++    private static void load() {
++        synchronized (IO_LOCK) {
++            if (loaded) {
++                return;
++            }
++            loaded = true;
++            if (!Files.exists(DATA_FILE)) {
++                return;
++            }
++            try (Reader reader = Files.newBufferedReader(DATA_FILE, StandardCharsets.UTF_8)) {
++                final JsonObject root = GSON.fromJson(reader, JsonObject.class);
++                if (root == null) {
++                    return;
++                }
++                readInto(root, "tps", TPS_ENABLED);
++                readInto(root, "ram", RAM_ENABLED);
++            } catch (final Exception exception) {
++                LOGGER.warn("Failed to load persisted SilkMC status bars from {}", DATA_FILE, exception);
++            }
++        }
++    }
++
++    private static void save() {
++        synchronized (IO_LOCK) {
++            final JsonObject root = new JsonObject();
++            root.add("tps", toArray(TPS_ENABLED));
++            root.add("ram", toArray(RAM_ENABLED));
++            try (Writer writer = Files.newBufferedWriter(DATA_FILE, StandardCharsets.UTF_8)) {
++                GSON.toJson(root, writer);
++            } catch (final IOException exception) {
++                LOGGER.warn("Failed to save SilkMC status bars to {}", DATA_FILE, exception);
++            }
++        }
++    }
++
++    private static JsonArray toArray(final Set<UUID> ids) {
++        final JsonArray array = new JsonArray();
++        for (final UUID id : ids) {
++            array.add(id.toString());
++        }
++        return array;
++    }
++
++    private static void readInto(final JsonObject root, final String key, final Set<UUID> target) {
++        if (!root.has(key) || !root.get(key).isJsonArray()) {
++            return;
++        }
++        for (final JsonElement element : root.getAsJsonArray(key)) {
++            try {
++                target.add(UUID.fromString(element.getAsString()));
++            } catch (final RuntimeException ignored) {
++                // Skip malformed entries.
++            }
++        }
 +    }
 +
 +    private static Component label(final String text) {
@@ -225,14 +332,8 @@
 +        return Component.text(text, color, TextDecoration.BOLD);
 +    }
 +
-+    private static TextColor pingTextColor(final int ping) {
-+        if (ping < 100) {
-+            return NamedTextColor.GREEN;
-+        }
-+        if (ping < 250) {
-+            return NamedTextColor.YELLOW;
-+        }
-+        return NamedTextColor.RED;
++    private static float clamp01(final float value) {
++        return Math.max(0.0F, Math.min(1.0F, value));
 +    }
 +
 +    private static TextColor tpsTextColor(final double tps) {
@@ -260,6 +361,16 @@
 +            return NamedTextColor.GREEN;
 +        }
 +        if (mspt <= 50.0D) {
++            return NamedTextColor.YELLOW;
++        }
++        return NamedTextColor.RED;
++    }
++
++    private static TextColor pingTextColor(final int ping) {
++        if (ping < 100) {
++            return NamedTextColor.GREEN;
++        }
++        if (ping < 250) {
 +            return NamedTextColor.YELLOW;
 +        }
 +        return NamedTextColor.RED;
