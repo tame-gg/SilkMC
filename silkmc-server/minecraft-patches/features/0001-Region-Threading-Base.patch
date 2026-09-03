@@ -7321,7 +7321,7 @@ index 89b9d1a4122d502437d516f8affc5ba72f421f5f..587ec673a0821e91de67abaf3a559c78
      }
  
 diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
-index d210f991366796d84e947df0a057c1adc62824f8..bc9f6cc286536b87513de81855ad0b61cf787c84 100644
+index d210f991366796d84e947df0a057c1adc62824f8..a568264ed0603b211e6f757cf7d8d1243f8845a9 100644
 --- a/net/minecraft/commands/Commands.java
 +++ b/net/minecraft/commands/Commands.java
 @@ -198,15 +198,15 @@ public class Commands {
@@ -7433,14 +7433,13 @@ index d210f991366796d84e947df0a057c1adc62824f8..bc9f6cc286536b87513de81855ad0b61
          new com.destroystokyo.paper.event.brigadier.AsyncPlayerSendCommandsEvent<CommandSourceStack>(player.getBukkitEntity(), (RootCommandNode) root, false).callEvent(); // Paper - Brigadier API
 -        net.minecraft.server.MinecraftServer.getServer().execute(() -> {
 -            runSync(player, bukkit, root);
--        });
 +        // Folia start - region threading
 +        player.getBukkitEntity().taskScheduler.scheduleOrExecute((ServerPlayer updatedPlayer) -> {
 +            runSync(updatedPlayer, bukkit, root);
-+        });
+         });
 +        // Folia end - region threading
      }
-
+ 
      private void runSync(ServerPlayer player, java.util.Collection<String> bukkit, RootCommandNode<CommandSourceStack> root) {
 diff --git a/net/minecraft/core/dispenser/DispenseItemBehavior.java b/net/minecraft/core/dispenser/DispenseItemBehavior.java
 index 162d7890f204315b0476467e757de5c9dd84aeca..ffbab239270f0b534287d6194c80264ba3c167c9 100644

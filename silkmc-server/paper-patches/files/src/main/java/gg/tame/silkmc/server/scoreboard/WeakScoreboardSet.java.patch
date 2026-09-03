@@ -1,0 +1,66 @@
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/scoreboard/WeakScoreboardSet.java
+@@ -1,0 +_,63 @@
++package gg.tame.silkmc.server.scoreboard;
++
++import java.lang.ref.WeakReference;
++import java.util.Iterator;
++import java.util.List;
++import java.util.NoSuchElementException;
++import java.util.concurrent.CopyOnWriteArrayList;
++import org.bukkit.craftbukkit.scoreboard.CraftScoreboard;
++
++/**
++ * Thread-safe weak registry of the scoreboards that vanilla criteria updates must be applied to.
++ *
++ * <p>Upstream tracks these in an {@code ArrayList}-backed {@code WeakCollection}, which assumes a
++ * single server thread. Under region threading the collection is iterated from every region thread
++ * (a criteria trigger such as a health or death change walks it) while plugins register new
++ * scoreboards from other threads, so an unsynchronized list would corrupt or throw.
++ *
++ * <p>Registration is rare and iteration is hot, so this is backed by a copy-on-write list: readers
++ * never block or allocate, and cleared references are pruned opportunistically during iteration.
++ */
++public final class WeakScoreboardSet implements Iterable<CraftScoreboard> {
++    private final List<WeakReference<CraftScoreboard>> entries = new CopyOnWriteArrayList<>();
++
++    public void add(final CraftScoreboard scoreboard) {
++        if (scoreboard == null) {
++            throw new IllegalArgumentException("Cannot track a null scoreboard");
++        }
++        this.entries.add(new WeakReference<>(scoreboard));
++    }
++
++    @Override
++    public Iterator<CraftScoreboard> iterator() {
++        final Iterator<WeakReference<CraftScoreboard>> backing = this.entries.iterator();
++        return new Iterator<>() {
++            private CraftScoreboard next;
++
++            @Override
++            public boolean hasNext() {
++                while (this.next == null && backing.hasNext()) {
++                    final WeakReference<CraftScoreboard> reference = backing.next();
++                    final CraftScoreboard scoreboard = reference.get();
++                    if (scoreboard == null) {
++                        // Collected; drop it so the list does not grow without bound.
++                        WeakScoreboardSet.this.entries.remove(reference);
++                    } else {
++                        this.next = scoreboard;
++                    }
++                }
++                return this.next != null;
++            }
++
++            @Override
++            public CraftScoreboard next() {
++                if (!this.hasNext()) {
++                    throw new NoSuchElementException();
++                }
++                final CraftScoreboard scoreboard = this.next;
++                this.next = null;
++                return scoreboard;
++            }
++        };
++    }
++}

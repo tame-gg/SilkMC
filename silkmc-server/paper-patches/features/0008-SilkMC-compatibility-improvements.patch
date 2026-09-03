@@ -90,7 +90,7 @@ index 10a0be7a4db1a51579d113d279af7a9effe7f438..09d8d7defb2542b2074d37b7936b9b00
              SharedConstants.getCurrentVersion().name(),
              getManifestAttribute(manifest, ATTRIBUTE_BUILD_NUMBER)
 diff --git a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
-index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c27a9d6c6 100644
+index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..4d4f4a6cc24a879f83bb6448492967220c2a28ff 100644
 --- a/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
 +++ b/src/main/java/io/papermc/paper/plugin/manager/PaperPluginInstanceManager.java
 @@ -14,6 +14,7 @@ import io.papermc.paper.plugin.provider.classloader.PaperClassLoaderStorage;
@@ -127,7 +127,7 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
              }
  
              // Perhaps abort here, rather than continue going, but as it stands,
-@@ -235,7 +247,11 @@ class PaperPluginInstanceManager {
+@@ -235,25 +247,17 @@ class PaperPluginInstanceManager {
              try {
                  javaPlugin.setEnabled(false);
              } catch (Throwable ex) {
@@ -140,7 +140,6 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
              }
  
              // Flush async appender before unloading, avoids issues when a log message with class context
-@@ -242,18 +251,6 @@ class PaperPluginInstanceManager {
              // tries to print after its source has unloaded (i.e., Guice enhanced errors)
              FeatureHooks.flushAsyncAppenders();
  
@@ -159,7 +158,7 @@ index 455e8c24d98fcd0ae0a349737a0e709a05ed9170..e27ecb71e12fbe3e2f718f1b2527e44c
          } catch (Throwable ex) {
              this.handlePluginException("Error occurred (in the plugin loader) while disabling "
                  + pluginName + " (Is it up to date?)", ex, plugin); // Paper
-@@ -318,6 +315,16 @@ class PaperPluginInstanceManager {
+@@ -318,6 +322,16 @@ class PaperPluginInstanceManager {
              this.handlePluginException("Error occurred (in the plugin loader) while removing chunk tickets for " + pluginName + " (Is it up to date?)", ex, plugin); // Paper
          }
  

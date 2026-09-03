@@ -1,0 +1,423 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Thu, 3 Sep 2026 14:51:57 -0500
+Subject: [PATCH] Restore Bukkit scoreboard API under region threading
+
+
+diff --git a/net/minecraft/server/ServerScoreboard.java b/net/minecraft/server/ServerScoreboard.java
+index 7ffd683c42557052d7bfa963d87e68f4e8f62d6c..0c68574ce5f03aed868443a8402894ebdf698937 100644
+--- a/net/minecraft/server/ServerScoreboard.java
++++ b/net/minecraft/server/ServerScoreboard.java
+@@ -26,8 +26,10 @@ import org.jspecify.annotations.Nullable;
+ 
+ public class ServerScoreboard extends Scoreboard {
+     private final MinecraftServer server;
+-    private final Set<Objective> trackedObjectives = Sets.newHashSet();
+-    private boolean dirty;
++    // SilkMC start - region threading - tracked objectives are consulted on every score change from any region
++    private final Set<Objective> trackedObjectives = java.util.concurrent.ConcurrentHashMap.newKeySet();
++    private volatile boolean dirty;
++    // SilkMC end - region threading
+ 
+     public ServerScoreboard(final MinecraftServer server) {
+         this.server = server;
+@@ -293,24 +295,33 @@ public class ServerScoreboard extends Scoreboard {
+         return count;
+     }
+ 
++    // SilkMC start - region threading - waypoint connections are region-owned world state and must
++    // run on the owning thread of the affected player, never on whichever thread mutated the scoreboard.
++    private static void remakeWaypointConnections(final ServerPlayer player) {
++        player.getBukkitEntity().taskScheduler.scheduleOrExecute((final ServerPlayer ownedPlayer) -> {
++            ownedPlayer.level().getWaypointManager().remakeConnections(ownedPlayer);
++        });
++    }
++
+     private void updatePlayerWaypoint(final String player) {
+         ServerPlayer serverPlayer = this.server.getPlayerList().getPlayerByName(player);
+         if (serverPlayer != null) {
+-            serverPlayer.level().getWaypointManager().remakeConnections(serverPlayer);
++            remakeWaypointConnections(serverPlayer);
+         }
+     }
+ 
+     private void updateTeamWaypoints(final PlayerTeam team) {
+-        for (ServerLevel level : this.server.getAllLevels()) {
+-            team.getPlayers()
+-                .stream()
+-                .map(name -> this.server.getPlayerList().getPlayerByName(name))
+-                .filter(Objects::nonNull)
+-                .forEach(player -> level.getWaypointManager().remakeConnections(player));
+-        }
++        team.getPlayers()
++            .stream()
++            .map(name -> this.server.getPlayerList().getPlayerByName(name))
++            .filter(Objects::nonNull)
++            .forEach(ServerScoreboard::remakeWaypointConnections);
+     }
++    // SilkMC end - region threading
+     // CraftBukkit start - Send to players
+     private void broadcastAll(Packet<?> packet) {
++        // SilkMC - region threading - players is a COW list and connection.send is thread-safe,
++        // so this is safe to run from any region thread without scheduling.
+         for (ServerPlayer serverPlayer : this.server.getPlayerList().getPlayers()) {
+             if (serverPlayer.getBukkitEntity().getScoreboard().getHandle() == this) {
+                 serverPlayer.connection.send(packet);
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index e3ed08dea3a34dad755bffea0807be149742eef5..043421f53a95c300a142c77b85935478005bd508 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2981,7 +2981,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 ServerLevel.this.getWaypointManager().untrackWaypoint(waypoint);
+             }
+ 
+-            //ServerLevel.this.getScoreboard().entityRemoved(entity); // Folia - region threading
++            ServerLevel.this.getScoreboard().entityRemoved(entity); // SilkMC - region threading - scoreboard state is now concurrent, so this no longer needs the main thread
+         }
+ 
+         @Override
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index e7579a9873362317dd82b63306cf650af9472574..f36c3c344192a0482803e1f24f5b6256c2c3b750 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -272,7 +272,12 @@ public abstract class PlayerList {
+         this.sendPlayerPermissionLevel(player);
+         player.getStats().markAllDirty();
+         player.getRecipeBook().sendInitialRecipeBook(player);
+-        //this.updateEntireScoreboard(level.getScoreboard(), player); // Folia - region threading
++        // SilkMC start - region threading - restore scoreboard sync on join. This only reads scoreboard
++        // state (backed by concurrent collections) and writes to this player's own connection, so it is
++        // safe here; we sync the player's own board rather than the level's so a scoreboard assigned
++        // during a join event is honoured.
++        this.updateEntireScoreboard((ServerScoreboard) player.getBukkitEntity().getScoreboard().getHandle(), player);
++        // SilkMC end - region threading
+         this.server.invalidateStatus();
+         MutableComponent component;
+         if (player.getGameProfile().name().equalsIgnoreCase(oldName)) {
+@@ -377,7 +382,7 @@ public abstract class PlayerList {
+         // Paper start - Configurable player collision; Add to collideRule team if needed
+         final net.minecraft.world.scores.Scoreboard scoreboard = this.getServer().getLevel(Level.OVERWORLD).getScoreboard();
+         final PlayerTeam collideRuleTeam = scoreboard.getPlayerTeam(this.collideRuleTeamName);
+-        if (false && this.collideRuleTeamName != null && collideRuleTeam != null && player.getTeam() == null) { // Folia - region threading
++        if (this.collideRuleTeamName != null && collideRuleTeam != null && player.getTeam() == null) { // SilkMC - region threading - team mutation is thread-safe again
+             scoreboard.addPlayerToTeam(player.getScoreboardName(), collideRuleTeam);
+         }
+         // Paper end - Configurable player collision
+@@ -516,7 +521,7 @@ public abstract class PlayerList {
+         // CraftBukkit end
+ 
+         // Paper start - Configurable player collision; Remove from collideRule team if needed
+-        if (false && this.collideRuleTeamName != null) { // Folia - region threading
++        if (this.collideRuleTeamName != null) { // SilkMC - region threading - team mutation is thread-safe again
+             final net.minecraft.world.scores.Scoreboard scoreBoard = this.server.getLevel(Level.OVERWORLD).getScoreboard();
+             final PlayerTeam team = scoreBoard.getPlayersTeam(this.collideRuleTeamName);
+             if (player.getTeam() == team && team != null) {
+@@ -1187,7 +1192,7 @@ public abstract class PlayerList {
+         // CraftBukkit end
+ 
+         // Paper start - Configurable player collision; Remove collideRule team if it exists
+-        if (false && this.collideRuleTeamName != null) { // Folia - region threading
++        if (this.collideRuleTeamName != null) { // SilkMC - region threading - team mutation is thread-safe again
+             final net.minecraft.world.scores.Scoreboard scoreboard = this.getServer().getLevel(Level.OVERWORLD).getScoreboard();
+             final PlayerTeam team = scoreboard.getPlayersTeam(this.collideRuleTeamName);
+             if (team != null) scoreboard.removePlayerTeam(team);
+diff --git a/net/minecraft/world/scores/PlayerScores.java b/net/minecraft/world/scores/PlayerScores.java
+index 1261101fe5b3f82fdc931c01ad1bc5f2202f0c4e..ca434ce7702ab80daa402f0b0b913f0f3a5f5f43 100644
+--- a/net/minecraft/world/scores/PlayerScores.java
++++ b/net/minecraft/world/scores/PlayerScores.java
+@@ -9,7 +9,7 @@ import java.util.function.Consumer;
+ import org.jspecify.annotations.Nullable;
+ 
+ class PlayerScores {
+-    private final Reference2ObjectOpenHashMap<Objective, Score> scores = new Reference2ObjectOpenHashMap<>(16, 0.5F);
++    private final Map<Objective, Score> scores = new java.util.concurrent.ConcurrentHashMap<>(); // SilkMC - region threading - reachable from every region thread
+ 
+     public @Nullable Score get(final Objective objective) {
+         return this.scores.get(objective);
+diff --git a/net/minecraft/world/scores/PlayerTeam.java b/net/minecraft/world/scores/PlayerTeam.java
+index 2bdbb8451974f0b8d6e94d390ac735f4ccffd954..bb8b936e55ad0949779fd67d716d9898ed330314 100644
+--- a/net/minecraft/world/scores/PlayerTeam.java
++++ b/net/minecraft/world/scores/PlayerTeam.java
+@@ -25,16 +25,18 @@ public class PlayerTeam extends Team {
+     private static final byte BIT_SEE_INVISIBLES = 2;
+     private final Scoreboard scoreboard;
+     private final String name;
+-    private final Set<String> players = Sets.newHashSet();
+-    private Component displayName;
+-    private Component playerPrefix = CommonComponents.EMPTY;
+-    private Component playerSuffix = CommonComponents.EMPTY;
+-    private boolean allowFriendlyFire = true;
+-    private boolean seeFriendlyInvisibles = true;
+-    private Team.Visibility nameTagVisibility = Team.Visibility.ALWAYS;
+-    private Team.Visibility deathMessageVisibility = Team.Visibility.ALWAYS;
+-    private Optional<TeamColor> color = Optional.empty();
+-    private Team.CollisionRule collisionRule = Team.CollisionRule.ALWAYS;
++    // SilkMC start - region threading - team state is read by packet builders on every region thread
++    private final Set<String> players = java.util.concurrent.ConcurrentHashMap.newKeySet();
++    private volatile Component displayName;
++    private volatile Component playerPrefix = CommonComponents.EMPTY;
++    private volatile Component playerSuffix = CommonComponents.EMPTY;
++    private volatile boolean allowFriendlyFire = true;
++    private volatile boolean seeFriendlyInvisibles = true;
++    private volatile Team.Visibility nameTagVisibility = Team.Visibility.ALWAYS;
++    private volatile Team.Visibility deathMessageVisibility = Team.Visibility.ALWAYS;
++    private volatile Optional<TeamColor> color = Optional.empty();
++    private volatile Team.CollisionRule collisionRule = Team.CollisionRule.ALWAYS;
++    // SilkMC end - region threading
+     private final Style displayNameStyle;
+ 
+     public PlayerTeam(final Scoreboard scoreboard, final String name) {
+diff --git a/net/minecraft/world/scores/Score.java b/net/minecraft/world/scores/Score.java
+index ef308f9a5fe6e768c6299fe39461b881c87f817a..04d1d6862e5f787a5a4aab23913577471b6edca8 100644
+--- a/net/minecraft/world/scores/Score.java
++++ b/net/minecraft/world/scores/Score.java
+@@ -11,10 +11,12 @@ import net.minecraft.network.chat.numbers.NumberFormatTypes;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class Score implements ReadOnlyScoreInfo {
+-    private int value;
+-    private boolean locked = true;
+-    private @Nullable Component display;
+-    private @Nullable NumberFormat numberFormat;
++    // SilkMC start - region threading - scores are read by packet builders on other region threads
++    private volatile int value;
++    private volatile boolean locked = true;
++    private volatile @Nullable Component display;
++    private volatile @Nullable NumberFormat numberFormat;
++    // SilkMC end - region threading
+ 
+     public Score() {
+     }
+diff --git a/net/minecraft/world/scores/Scoreboard.java b/net/minecraft/world/scores/Scoreboard.java
+index 4a15851bda30c918c58c96d2cb98b74f30db396c..66fa7800a76e7cb591e79321264ade2ba8434d92 100644
+--- a/net/minecraft/world/scores/Scoreboard.java
++++ b/net/minecraft/world/scores/Scoreboard.java
+@@ -30,15 +30,43 @@ import org.slf4j.Logger;
+ public class Scoreboard {
+     public static final String HIDDEN_SCORE_PREFIX = "#";
+     private static final Logger LOGGER = LogUtils.getLogger();
+-    private final Object2ObjectMap<String, Objective> objectivesByName = new Object2ObjectOpenHashMap<>(16, 0.5F);
+-    private final Reference2ObjectMap<ObjectiveCriteria, List<Objective>> objectivesByCriteria = new Reference2ObjectOpenHashMap<>();
+-    private final Map<String, PlayerScores> playerScores = new Object2ObjectOpenHashMap<>(16, 0.5F);
+-    private final Map<DisplaySlot, Objective> displayObjectives = new EnumMap<>(DisplaySlot.class);
+-    private final Object2ObjectMap<String, PlayerTeam> teamsByName = new Object2ObjectOpenHashMap<>();
+-    private final Object2ObjectMap<String, PlayerTeam> teamsByPlayer = new Object2ObjectOpenHashMap<>();
++    // SilkMC start - region threading - scoreboard state is reachable from every region thread.
++    // Reads are lock-free (weakly consistent views are safe to iterate off-thread); compound
++    // structural mutations are serialized by silk$lock so they stay atomic without a global thread.
++    private final Map<String, Objective> objectivesByName = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<ObjectiveCriteria, List<Objective>> objectivesByCriteria = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<String, PlayerScores> playerScores = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<DisplaySlot, Objective> displayObjectives = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<String, PlayerTeam> teamsByName = new java.util.concurrent.ConcurrentHashMap<>();
++    private final Map<String, PlayerTeam> teamsByPlayer = new java.util.concurrent.ConcurrentHashMap<>();
++    private final java.util.concurrent.locks.ReentrantLock silk$lock = new java.util.concurrent.locks.ReentrantLock();
++
++    /**
++     * Runs a compound structural mutation of this scoreboard atomically with respect to other
++     * mutations. The lock is per-scoreboard and is never held across a region schedule, so it
++     * cannot participate in a deadlock with the region scheduler.
++     */
++    public final void silk$writeLocked(final Runnable action) {
++        this.silk$lock.lock();
++        try {
++            action.run();
++        } finally {
++            this.silk$lock.unlock();
++        }
++    }
++
++    public final <T> T silk$writeLocked(final java.util.function.Supplier<T> action) {
++        this.silk$lock.lock();
++        try {
++            return action.get();
++        } finally {
++            this.silk$lock.unlock();
++        }
++    }
++    // SilkMC end - region threading
+ 
+     public @Nullable Objective getObjective(final @Nullable String name) {
+-        return this.objectivesByName.get(name);
++        return name == null ? null : this.objectivesByName.get(name); // SilkMC - region threading - CHM rejects null keys
+     }
+ 
+     public Objective addObjective(
+@@ -49,15 +77,19 @@ public class Scoreboard {
+         final boolean displayAutoUpdate,
+         final @Nullable NumberFormat numberFormat
+     ) {
+-        if (this.objectivesByName.containsKey(name)) {
+-            throw new IllegalArgumentException("An objective with the name '" + name + "' already exists!");
+-        }
++        // SilkMC start - region threading - creation must be atomic against concurrent registration
++        return this.silk$writeLocked(() -> {
++            if (this.objectivesByName.containsKey(name)) {
++                throw new IllegalArgumentException("An objective with the name '" + name + "' already exists!");
++            }
+ 
+-        Objective objective = new Objective(this, name, criteria, displayName, renderType, displayAutoUpdate, numberFormat);
+-        this.objectivesByCriteria.computeIfAbsent(criteria, k -> Lists.newArrayList()).add(objective);
+-        this.objectivesByName.put(name, objective);
+-        this.onObjectiveAdded(objective);
+-        return objective;
++            Objective objective = new Objective(this, name, criteria, displayName, renderType, displayAutoUpdate, numberFormat);
++            this.objectivesByCriteria.computeIfAbsent(criteria, k -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(objective);
++            this.objectivesByName.put(name, objective);
++            this.onObjectiveAdded(objective);
++            return objective;
++        });
++        // SilkMC end - region threading
+     }
+ 
+     public final void forAllObjectives(final ObjectiveCriteria criteria, final ScoreHolder name, final Consumer<ScoreAccess> operation) {
+@@ -194,6 +226,7 @@ public class Scoreboard {
+     }
+ 
+     public void resetSinglePlayerScore(final ScoreHolder player, final Objective objective) {
++        this.silk$writeLocked(() -> { // SilkMC - region threading
+         PlayerScores scores = this.playerScores.get(player.getScoreboardName());
+         if (scores != null) {
+             boolean hasRemoved = scores.remove(objective);
+@@ -206,6 +239,7 @@ public class Scoreboard {
+                 this.onPlayerScoreRemoved(player, objective);
+             }
+         }
++        }); // SilkMC - region threading
+     }
+ 
+     public Object2IntMap<Objective> listPlayerScores(final ScoreHolder player) {
+@@ -214,6 +248,7 @@ public class Scoreboard {
+     }
+ 
+     public void removeObjective(final Objective objective) {
++        this.silk$writeLocked(() -> { // SilkMC - region threading
+         this.objectivesByName.remove(objective.getName());
+ 
+         for (DisplaySlot value : DisplaySlot.values()) {
+@@ -232,10 +267,17 @@ public class Scoreboard {
+         }
+ 
+         this.onObjectiveRemoved(objective);
++        }); // SilkMC - region threading
+     }
+ 
+     public void setDisplayObjective(final DisplaySlot slot, final @Nullable Objective objective) {
+-        this.displayObjectives.put(slot, objective);
++        // SilkMC start - region threading - CHM rejects null values; absent == cleared slot
++        if (objective == null) {
++            this.displayObjectives.remove(slot);
++        } else {
++            this.displayObjectives.put(slot, objective);
++        }
++        // SilkMC end - region threading
+     }
+ 
+     public @Nullable Objective getDisplayObjective(final DisplaySlot slot) {
+@@ -243,23 +285,28 @@ public class Scoreboard {
+     }
+ 
+     public @Nullable PlayerTeam getPlayerTeam(final String name) {
+-        return this.teamsByName.get(name);
++        return name == null ? null : this.teamsByName.get(name); // SilkMC - region threading - CHM rejects null keys
+     }
+ 
+     public PlayerTeam addPlayerTeam(final String name) {
+-        PlayerTeam team = this.getPlayerTeam(name);
+-        if (team != null) {
+-            LOGGER.warn("Requested creation of existing team '{}'", name);
+-            return team;
+-        } else {
+-            team = new PlayerTeam(this, name);
+-            this.teamsByName.put(name, team);
+-            this.onTeamAdded(team);
+-            return team;
+-        }
++        // SilkMC start - region threading - check-then-create must be atomic
++        return this.silk$writeLocked(() -> {
++            PlayerTeam team = this.getPlayerTeam(name);
++            if (team != null) {
++                LOGGER.warn("Requested creation of existing team '{}'", name);
++                return team;
++            } else {
++                team = new PlayerTeam(this, name);
++                this.teamsByName.put(name, team);
++                this.onTeamAdded(team);
++                return team;
++            }
++        });
++        // SilkMC end - region threading
+     }
+ 
+     public void removePlayerTeam(final PlayerTeam team) {
++        this.silk$writeLocked(() -> { // SilkMC - region threading
+         this.teamsByName.remove(team.getName());
+ 
+         for (String player : team.getPlayers()) {
+@@ -267,34 +314,45 @@ public class Scoreboard {
+         }
+ 
+         this.onTeamRemoved(team);
++        }); // SilkMC - region threading
+     }
+ 
+     public boolean addPlayerToTeam(final String player, final PlayerTeam team) {
+-        if (this.getPlayersTeam(player) != null) {
+-            this.removePlayerFromTeam(player);
+-        }
++        // SilkMC start - region threading - move-between-teams must be atomic
++        return this.silk$writeLocked(() -> {
++            if (this.getPlayersTeam(player) != null) {
++                this.removePlayerFromTeam(player);
++            }
+ 
+-        this.teamsByPlayer.put(player, team);
+-        return team.getPlayers().add(player);
++            this.teamsByPlayer.put(player, team);
++            return team.getPlayers().add(player);
++        });
++        // SilkMC end - region threading
+     }
+ 
+     public boolean removePlayerFromTeam(final String player) {
+-        PlayerTeam team = this.getPlayersTeam(player);
+-        if (team != null) {
+-            this.removePlayerFromTeam(player, team);
+-            return true;
+-        } else {
+-            return false;
+-        }
++        // SilkMC start - region threading
++        return this.silk$writeLocked(() -> {
++            PlayerTeam team = this.getPlayersTeam(player);
++            if (team != null) {
++                this.removePlayerFromTeam(player, team);
++                return true;
++            } else {
++                return false;
++            }
++        });
++        // SilkMC end - region threading
+     }
+ 
+     public void removePlayerFromTeam(final String player, final PlayerTeam team) {
++        this.silk$writeLocked(() -> { // SilkMC - region threading
+         if (this.getPlayersTeam(player) != team) {
+             throw new IllegalStateException("Player is either on another team or not on any team. Cannot remove from team '" + team.getName() + "'.");
+         }
+ 
+         this.teamsByPlayer.remove(player);
+         team.getPlayers().remove(player);
++        }); // SilkMC - region threading
+     }
+ 
+     public Collection<String> getTeamNames() {
+@@ -306,7 +364,7 @@ public class Scoreboard {
+     }
+ 
+     public @Nullable PlayerTeam getPlayersTeam(final String name) {
+-        return this.teamsByPlayer.get(name);
++        return name == null ? null : this.teamsByPlayer.get(name); // SilkMC - region threading - CHM rejects null keys
+     }
+ 
+     public void onObjectiveAdded(final Objective objective) {

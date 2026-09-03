@@ -5,12 +5,12 @@ Subject: [PATCH] SilkMC operator command
 
 
 diff --git a/src/main/java/io/papermc/paper/command/PaperCommands.java b/src/main/java/io/papermc/paper/command/PaperCommands.java
-index 3deca0b4e95609dc95376a86b5cbd525729a1031..6307b90a93b3fa8d697f6036bbcdc0dac5c0409e 100644
+index 3deca0b4e95609dc95376a86b5cbd525729a1031..1d7de704a25cbcfa9ab426e49bd44da594bb8cd5 100644
 --- a/src/main/java/io/papermc/paper/command/PaperCommands.java
 +++ b/src/main/java/io/papermc/paper/command/PaperCommands.java
 @@ -1,6 +1,10 @@
  package io.papermc.paper.command;
-
+ 
  import com.mojang.brigadier.tree.LiteralCommandNode;
 +import gg.tame.silkmc.server.bars.ServerStatusBars;
 +import gg.tame.silkmc.server.command.RamBarCommand;
