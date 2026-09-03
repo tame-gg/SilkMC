@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Thu, 3 Sep 2026 16:13:03 -0500
+Subject: [PATCH] Enable /scoreboard with region-scoped score holder selectors
+
+
+diff --git a/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea60c06382bf3182e096a0e6c6195e2b8aeda9f6
+--- /dev/null
++++ b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
+@@ -0,0 +1,90 @@
++package gg.tame.silkmc.server.command;
++
++import ca.spottedleaf.moonrise.common.util.TickThread;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
++import net.minecraft.ChatFormatting;
++import net.minecraft.commands.CommandSourceStack;
++import net.minecraft.network.chat.Component;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.scores.ScoreHolder;
++
++/**
++ * Restricts resolved score holders to the region the command is executing on.
++ *
++ * <p>Scoreboard <i>state</i> is safe to touch from any region thread, but a score holder that is a
++ * live {@link Entity} is not: reading its display name, or letting a criteria update fire against
++ * it, touches entity state owned by another region while that region may be ticking it. Vanilla
++ * selector resolution ({@code @a}, {@code @e}, a UUID lookup across levels) happily returns
++ * entities from every region, and neither the selector nor the entity getters assert ownership, so
++ * the unfiltered result is a silent data race rather than a loud failure.
++ *
++ * <p>Holders that are not entities - plain names, {@code #hidden} names, offline players, the
++ * {@code *} wildcard - carry no entity state and are always kept. Those cover the overwhelming
++ * majority of scoreboard usage.
++ *
++ * <p>Per SilkMC's cross-region policy the skipped holders are reported to the sender rather than
++ * silently dropped, and a command that matched <i>only</i> out-of-region entities fails outright
++ * instead of pretending to have done something.
++ */
++public final class RegionScopedScoreHolders {
++    private static final SimpleCommandExceptionType ERROR_ALL_OUT_OF_REGION = new SimpleCommandExceptionType(
++        Component.literal("All matched targets are owned by other regions; run this where they are ticking, or target them by name")
++    );
++
++    private RegionScopedScoreHolders() {
++    }
++
++    /**
++     * Filters {@code holders} down to those the calling thread may safely touch.
++     *
++     * @throws CommandSyntaxException if every match was an entity owned by another region
++     */
++    public static Collection<ScoreHolder> filterToRegion(
++        final CommandSourceStack source,
++        final Collection<ScoreHolder> holders
++    ) throws CommandSyntaxException {
++        List<ScoreHolder> kept = null;
++        int skipped = 0;
++
++        for (final ScoreHolder holder : holders) {
++            if (holder instanceof Entity entity && !TickThread.isTickThreadFor(entity)) {
++                if (kept == null) {
++                    // First rejection: copy everything accepted so far.
++                    kept = new ArrayList<>(holders.size());
++                    for (final ScoreHolder earlier : holders) {
++                        if (earlier == holder) {
++                            break;
++                        }
++                        kept.add(earlier);
++                    }
++                }
++                skipped++;
++            } else if (kept != null) {
++                kept.add(holder);
++            }
++        }
++
++        if (kept == null) {
++            return holders; // nothing was out of region - hand back the original collection
++        }
++
++        if (kept.isEmpty()) {
++            throw ERROR_ALL_OUT_OF_REGION.create();
++        }
++
++        final int skippedCount = skipped;
++        final int keptCount = kept.size();
++        source.sendSuccess(
++            () -> Component.literal(
++                "Skipped " + skippedCount + " target" + (skippedCount == 1 ? "" : "s")
++                    + " owned by other regions; affected " + keptCount + "."
++            ).withStyle(ChatFormatting.YELLOW),
++            false
++        );
++        return kept;
++    }
++}
+diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
+index b1a8e4d6cf21245321dc8855b4c2096b14bbb0a2..51d01ff1c38c668cadfff2f4b6f028f2bc53d11c 100644
+--- a/net/minecraft/commands/Commands.java
++++ b/net/minecraft/commands/Commands.java
+@@ -240,7 +240,7 @@ public class Commands {
+         RotateCommand.register(this.dispatcher);
+         SayCommand.register(this.dispatcher);
+         //ScheduleCommand.register(this.dispatcher); // Folia - region threading
+-        //ScoreboardCommand.register(this.dispatcher, context); // Folia - region threading
++        ScoreboardCommand.register(this.dispatcher, context); // SilkMC - region threading - scoreboard state is concurrent and score-holder selectors are region-scoped
+         SeedCommand.register(this.dispatcher, commandSelection != Commands.CommandSelection.INTEGRATED);
+         VersionCommand.register(this.dispatcher, commandSelection != Commands.CommandSelection.INTEGRATED);
+         SetBlockCommand.register(this.dispatcher, context);
+diff --git a/net/minecraft/commands/arguments/ScoreHolderArgument.java b/net/minecraft/commands/arguments/ScoreHolderArgument.java
+index 28d3c11aa8bc8ef99024617277ad56341b5d80a4..bfff20e4ae6a515ef21b4849fecf1799e9c8a255 100644
+--- a/net/minecraft/commands/arguments/ScoreHolderArgument.java
++++ b/net/minecraft/commands/arguments/ScoreHolderArgument.java
+@@ -69,7 +69,9 @@ public class ScoreHolderArgument implements ArgumentType<ScoreHolderArgument.Res
+         if (result.isEmpty()) {
+             throw EntityArgument.NO_ENTITIES_FOUND.create();
+         } else {
+-            return result;
++            // SilkMC - region threading - selectors resolve across every region; keep only the holders
++            // this thread owns so we never read entity state another region is ticking.
++            return gg.tame.silkmc.server.command.RegionScopedScoreHolders.filterToRegion(context.getSource(), result);
+         }
+     }
+ 
