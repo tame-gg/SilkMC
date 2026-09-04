@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import net.minecraft.server.MinecraftServer;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.InvalidPluginException;
@@ -21,8 +22,8 @@ import org.bukkit.plugin.PluginDescriptionFile;
 public final class SilkPluginCompatibility {
 
     private static final Logger LOGGER = Logger.getLogger("SilkMC");
-    private static final File CONFIG_FILE = new File("silkmc-compatibility.yml");
-    private static final File OVERRIDES_FILE = new File("silkmc-plugin-overrides.yml");
+    private static final String CONFIG_FILE_NAME = "silkmc-compatibility.yml";
+    private static final String OVERRIDES_FILE_NAME = "silkmc-plugin-overrides.yml";
     private static final Set<String> WARNED_PLUGINS = ConcurrentHashMap.newKeySet();
     private static final Set<String> ENABLE_FAILED_PLUGINS = ConcurrentHashMap.newKeySet();
     private static final ThreadLocal<LifecycleContext> ACTIVE_PLUGIN_LIFECYCLE = new ThreadLocal<>();
@@ -192,20 +193,34 @@ public final class SilkPluginCompatibility {
         }
     }
 
-    private static Policy loadPolicy() {
-        final YamlConfiguration config = YamlConfiguration.loadConfiguration(CONFIG_FILE);
-        final YamlConfiguration overridesConfig = YamlConfiguration.loadConfiguration(OVERRIDES_FILE);
+    /**
+     * Resolves a SilkMC config file against the server directory rather than the process working
+     * directory. They are usually the same, but when they are not, a bare relative name means the
+     * server reads (and creates) a different file from the one the operator edited next to their
+     * {@code server.properties} - and {@code /silkmc reload} then reports success having reloaded
+     * nothing they changed.
+     */
+    private static File configFile(final String name) {
+        final MinecraftServer server = MinecraftServer.getServer();
+        return server == null ? new File(name) : server.getServerDirectory().resolve(name).toFile();
+    }
 
-        if (!CONFIG_FILE.exists()) {
+    private static Policy loadPolicy() {
+        final File configFile = configFile(CONFIG_FILE_NAME);
+        final File overridesFile = configFile(OVERRIDES_FILE_NAME);
+        final YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+        final YamlConfiguration overridesConfig = YamlConfiguration.loadConfiguration(overridesFile);
+
+        if (!configFile.exists()) {
             config.set("plugins.unsupported-plugin-mode", "WARN");
             config.set("plugins.warn-on-load", true);
             config.set("plugins.disable-incompatible-plugins", true);
             config.set("plugins.log-compatibility-stacktraces", true);
-            saveConfig(config, CONFIG_FILE, "SilkMC compatibility config");
+            saveConfig(config, configFile, "SilkMC compatibility config");
         }
-        if (!OVERRIDES_FILE.exists()) {
+        if (!overridesFile.exists()) {
             overridesConfig.createSection("overrides");
-            saveConfig(overridesConfig, OVERRIDES_FILE, "SilkMC plugin override config");
+            saveConfig(overridesConfig, overridesFile, "SilkMC plugin override config");
         }
 
         return new Policy(
@@ -292,8 +307,14 @@ public final class SilkPluginCompatibility {
 
     private static Throwable rootCause(final Throwable throwable) {
         Throwable current = throwable;
-        while (current.getCause() != null && current.getCause() != current) {
-            current = current.getCause();
+        // Bounded: a plugin can hand us a cause cycle longer than one hop (a -> b -> a), and this
+        // runs while the server is already reporting a failure.
+        for (int depth = 0; depth < 64; ++depth) {
+            final Throwable cause = current.getCause();
+            if (cause == null || cause == current) {
+                break;
+            }
+            current = cause;
         }
         return current;
     }
@@ -348,7 +369,7 @@ public final class SilkPluginCompatibility {
 
         private static UnsupportedPluginMode from(final String value) {
             try {
-                return UnsupportedPluginMode.valueOf(value.trim().toUpperCase());
+                return UnsupportedPluginMode.valueOf(value.trim().toUpperCase(Locale.ROOT));
             } catch (final IllegalArgumentException ex) {
                 return WARN;
             }
