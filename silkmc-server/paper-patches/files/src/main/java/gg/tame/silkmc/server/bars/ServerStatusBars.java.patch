@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/bars/ServerStatusBars.java
-@@ -1,0 +_,410 @@
+@@ -1,0 +_,571 @@
 +package gg.tame.silkmc.server.bars;
 +
 +import ca.spottedleaf.common.time.TickData;
@@ -11,6 +11,7 @@
 +import com.mojang.logging.LogUtils;
 +import io.papermc.paper.threadedregions.RegionizedServer;
 +import io.papermc.paper.threadedregions.ThreadedRegionizer;
++import io.papermc.paper.threadedregions.TickRegionScheduler;
 +import io.papermc.paper.threadedregions.TickRegions;
 +import java.io.IOException;
 +import java.io.Reader;
@@ -18,21 +19,26 @@
 +import java.lang.management.ManagementFactory;
 +import java.lang.management.MemoryUsage;
 +import java.nio.charset.StandardCharsets;
++import java.nio.file.AtomicMoveNotSupportedException;
 +import java.nio.file.Files;
 +import java.nio.file.Path;
-+import java.util.HashSet;
++import java.nio.file.StandardCopyOption;
 +import java.util.Map;
 +import java.util.Set;
 +import java.util.UUID;
 +import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledExecutorService;
++import java.util.concurrent.TimeUnit;
++import java.util.function.Consumer;
 +import net.kyori.adventure.bossbar.BossBar;
 +import net.kyori.adventure.text.Component;
 +import net.kyori.adventure.text.minimessage.MiniMessage;
 +import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 +import net.minecraft.server.MinecraftServer;
-+import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.entity.Entity;
 +import org.bukkit.Bukkit;
-+import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.craftbukkit.entity.CraftEntity;
 +import org.bukkit.entity.Player;
 +import org.slf4j.Logger;
 +
@@ -46,39 +52,58 @@
 + * turn mirrors Purpur's TPS/RAM bars) so the look matches that project's defaults.
 + *
 + * <p>Per-player opt-in state is persisted to disk ({@code silkmc-status-bars.json}) so that a
-+ * player's enabled bars survive disconnect/reconnect and full server restarts. A single shared
-+ * daemon thread refreshes every tracked player's active bars once per second and re-shows them
-+ * to players as they (re)join, reading region-local tick data where available and falling back
-+ * to the global region schedule. This is intended as a lightweight testing/observability aid.
++ * player's enabled bars survive disconnect/reconnect and full server restarts. This is intended as
++ * a lightweight testing/observability aid.
++ *
++ * <h2>Threading</h2>
++ *
++ * <p>Everything that reads or writes game state runs on the region thread that owns the player it
++ * is about. Each tracked player drives their own refresh loop through the player's
++ * {@link io.papermc.paper.threadedregions.EntityScheduler}, re-arming itself every
++ * {@link #REFRESH_INTERVAL_TICKS} ticks; the scheduler follows the player across region splits,
++ * merges and dimension changes, and retires the loop when the player disconnects. Toggles from
++ * {@code /tpsbar} and {@code /rambar} are funnelled onto the same thread, so the transient bar maps
++ * below are only ever mutated by the owning region and cannot race.
++ *
++ * <p>A single daemon supervisor thread ticks once per second, but it touches no game state at all:
++ * it only hands a task to the global region, which is the owner of the player list and may
++ * therefore enumerate online players and arm a refresh loop for anyone who has opted in but is not
++ * currently running one (a player who just joined, or whose loop was retired).
 + */
 +public final class ServerStatusBars {
 +
 +    private static final Logger LOGGER = LogUtils.getLogger();
 +    private static final Gson GSON = new Gson();
-+    private static final Path DATA_FILE = Path.of("silkmc-status-bars.json");
++    private static final String DATA_FILE_NAME = "silkmc-status-bars.json";
 +    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
 +
-+    private static final long REFRESH_INTERVAL_MS = 1000L;
++    private static final long REFRESH_INTERVAL_TICKS = 20L;
++    private static final long SUPERVISOR_INTERVAL_MS = 1000L;
 +
 +    // Title templates and gradient text colors, matching PurpurBars' default config.
 +    private static final String TPS_TITLE = "<gray>TPS<yellow>:</yellow> <tps> MSPT<yellow>:</yellow> <mspt> Ping<yellow>:</yellow> <ping>ms";
 +    private static final String RAM_TITLE = "<gray>Ram<yellow>:</yellow> <used>/<xmx> (<percent>)";
-+    private static final String COLOR_GOOD = "<gradient:#55ff55:#00aa00><text></gradient>";
-+    private static final String COLOR_MEDIUM = "<gradient:#ffff55:#ffaa00><text></gradient>";
-+    private static final String COLOR_LOW = "<gradient:#ff5555:#aa0000><text></gradient>";
++    static final String COLOR_GOOD = "<gradient:#55ff55:#00aa00><text></gradient>";
++    static final String COLOR_MEDIUM = "<gradient:#ffff55:#ffaa00><text></gradient>";
++    static final String COLOR_LOW = "<gradient:#ff5555:#aa0000><text></gradient>";
 +    private static final char[] BYTE_UNITS = {'B', 'K', 'M', 'G', 'T', 'P', 'E'};
 +
 +    // Persisted opt-in state: which players want each bar. Survives reconnects and restarts.
 +    private static final Set<UUID> TPS_ENABLED = ConcurrentHashMap.newKeySet();
 +    private static final Set<UUID> RAM_ENABLED = ConcurrentHashMap.newKeySet();
 +
-+    // Transient boss bars currently shown to online players; rebuilt on (re)join.
++    // Transient boss bars currently shown to online players; rebuilt on (re)join. Only mutated from
++    // the region thread that owns the player each entry belongs to.
 +    private static final Map<UUID, BossBar> TPS_BARS = new ConcurrentHashMap<>();
 +    private static final Map<UUID, BossBar> RAM_BARS = new ConcurrentHashMap<>();
 +
++    // Players that currently have a self-rearming refresh loop on their entity scheduler.
++    private static final Set<UUID> ACTIVE_LOOPS = ConcurrentHashMap.newKeySet();
++
 +    private static final Object IO_LOCK = new Object();
-+    private static volatile Thread updateThread;
++    private static volatile ScheduledExecutorService supervisor;
 +    private static volatile boolean loaded;
++    private static Path dataFile; // Guarded by IO_LOCK.
 +
 +    private ServerStatusBars() {
 +    }
@@ -89,7 +114,7 @@
 +     */
 +    public static void init() {
 +        load();
-+        ensureThread();
++        ensureSupervisor();
 +    }
 +
 +    /**
@@ -122,78 +147,172 @@
 +
 +    private static boolean toggle(final Player player, final Set<UUID> enabled, final Map<UUID, BossBar> bars, final BarRenderer renderer) {
 +        final UUID id = player.getUniqueId();
-+        if (enabled.remove(id)) {
-+            final BossBar existing = bars.remove(id);
-+            if (existing != null) {
-+                player.hideBossBar(existing);
++        final boolean nowEnabled = !enabled.remove(id);
++        if (nowEnabled) {
++            enabled.add(id);
++        }
++
++        // The opt-in sets above are concurrent and safe to flip from here, but showing or hiding the
++        // bar touches the player, so hand that to the region that owns them. When the command is
++        // already running on that region (the normal case) this executes inline.
++        onOwningThread(player, entity -> {
++            if (!(entity.getBukkitEntity() instanceof final Player owned)) {
++                return;
 +            }
-+            return false;
-+        }
-+        enabled.add(id);
-+        ensureThread();
-+        try {
-+            renderer.show(player);
-+        } catch (final Throwable ignored) {
-+            // The refresh loop will show the bar shortly.
-+        }
-+        return true;
++            if (nowEnabled) {
++                renderer.show(owned);
++                ensureLoop(owned, id);
++            } else {
++                hide(owned, bars, id);
++            }
++        });
++
++        ensureSupervisor();
++        return nowEnabled;
 +    }
 +
-+    private static synchronized void ensureThread() {
-+        if (updateThread != null) {
++    /**
++     * Runs {@code action} on the region thread that owns {@code player}, immediately if the caller
++     * already owns it. Never blocks and never touches the player from the calling thread.
++     */
++    private static void onOwningThread(final Player player, final Consumer<Entity> action) {
++        try {
++            ((CraftEntity) player).taskScheduler.scheduleOrExecute(action);
++        } catch (final Throwable throwable) {
++            LOGGER.warn("Failed to schedule a SilkMC status bar update for {}", player.getUniqueId(), throwable);
++        }
++    }
++
++    private static synchronized void ensureSupervisor() {
++        if (supervisor != null) {
 +            return;
 +        }
-+        final Thread thread = new Thread(ServerStatusBars::runLoop, "SilkMC Status Bars");
-+        thread.setDaemon(true);
-+        updateThread = thread;
-+        thread.start();
++        final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
++            final Thread thread = new Thread(runnable, "SilkMC Status Bars Supervisor");
++            thread.setDaemon(true);
++            return thread;
++        });
++        supervisor = executor;
++        executor.scheduleWithFixedDelay(
++            ServerStatusBars::pumpSupervisor,
++            SUPERVISOR_INTERVAL_MS,
++            SUPERVISOR_INTERVAL_MS,
++            TimeUnit.MILLISECONDS
++        );
 +    }
 +
-+    private static void runLoop() {
-+        for (;;) {
-+            try {
-+                Thread.sleep(REFRESH_INTERVAL_MS);
-+            } catch (final InterruptedException ignored) {
++    /**
++     * Runs on the supervisor thread, which owns no region: it may not read any game state, only hand
++     * work to the global region.
++     */
++    private static void pumpSupervisor() {
++        try {
++            final MinecraftServer server = MinecraftServer.getServer();
++            if (server == null || server.hasStopped()) {
++                return;
++            }
++            if (TPS_ENABLED.isEmpty() && RAM_ENABLED.isEmpty()) {
++                return;
++            }
++            RegionizedServer.getInstance().addTask(ServerStatusBars::armMissingLoops);
++        } catch (final Throwable throwable) {
++            LOGGER.warn("Failed to schedule the SilkMC status bar sweep", throwable);
++        }
++    }
++
++    /**
++     * Runs on the global region, which owns the player list. Starts a refresh loop for every opted-in
++     * player that does not have one yet, which is how bars come back after a join or reconnect.
++     */
++    private static void armMissingLoops() {
++        try {
++            for (final Player player : Bukkit.getOnlinePlayers()) {
++                final UUID id = player.getUniqueId();
++                if (TPS_ENABLED.contains(id) || RAM_ENABLED.contains(id)) {
++                    ensureLoop(player, id);
++                }
++            }
++        } catch (final Throwable throwable) {
++            LOGGER.warn("Failed to sweep SilkMC status bars", throwable);
++        }
++    }
++
++    private static void ensureLoop(final Player player, final UUID id) {
++        if (!ACTIVE_LOOPS.add(id)) {
++            return;
++        }
++        if (!scheduleRefresh(player, id, 1L)) {
++            ACTIVE_LOOPS.remove(id);
++        }
++    }
++
++    private static boolean scheduleRefresh(final Player player, final UUID id, final long delayTicks) {
++        try {
++            return ((CraftEntity) player).taskScheduler.schedule(
++                (final Entity entity) -> refresh(entity, id),
++                (final Entity entity) -> forget(id),
++                delayTicks
++            );
++        } catch (final Throwable throwable) {
++            LOGGER.warn("Failed to schedule the SilkMC status bar refresh for {}", id, throwable);
++            return false;
++        }
++    }
++
++    /**
++     * One refresh tick for a single player, invoked by that player's entity scheduler and therefore
++     * on the region thread that owns them. Re-arms itself while the player still wants a bar.
++     */
++    private static void refresh(final Entity entity, final UUID id) {
++        Player player = null;
++        try {
++            if (!(entity.getBukkitEntity() instanceof final Player online) || !online.isOnline()) {
++                forget(id);
 +                return;
 +            }
 +
-+            final MinecraftServer server = MinecraftServer.getServer();
-+            if (server == null || server.hasStopped()) {
-+                continue;
++            final boolean wantsTps = TPS_ENABLED.contains(id);
++            final boolean wantsRam = RAM_ENABLED.contains(id);
++            if (!wantsTps && !wantsRam) {
++                hide(online, TPS_BARS, id);
++                hide(online, RAM_BARS, id);
++                ACTIVE_LOOPS.remove(id);
++                return;
 +            }
 +
-+            try {
-+                cleanup(TPS_BARS, TPS_ENABLED);
-+                cleanup(RAM_BARS, RAM_ENABLED);
-+
-+                for (final UUID id : new HashSet<>(TPS_ENABLED)) {
-+                    final Player player = Bukkit.getPlayer(id);
-+                    if (player != null && player.isOnline()) {
-+                        showTps(player);
-+                    }
-+                }
-+                for (final UUID id : new HashSet<>(RAM_ENABLED)) {
-+                    final Player player = Bukkit.getPlayer(id);
-+                    if (player != null && player.isOnline()) {
-+                        showRam(player);
-+                    }
-+                }
-+            } catch (final Throwable throwable) {
-+                LOGGER.warn("Failed to refresh SilkMC status bars", throwable);
++            if (wantsTps) {
++                showTps(online);
++            } else {
++                hide(online, TPS_BARS, id);
 +            }
++            if (wantsRam) {
++                showRam(online);
++            } else {
++                hide(online, RAM_BARS, id);
++            }
++            player = online;
++        } catch (final Throwable throwable) {
++            LOGGER.warn("Failed to refresh SilkMC status bars for {}", id, throwable);
++        }
++
++        // On any failure the loop stops here; the supervisor re-arms it on its next sweep.
++        if (player == null || !scheduleRefresh(player, id, REFRESH_INTERVAL_TICKS)) {
++            ACTIVE_LOOPS.remove(id);
 +        }
 +    }
 +
-+    // Hides and drops any transient bar whose player has left or who has toggled the bar off.
-+    private static void cleanup(final Map<UUID, BossBar> bars, final Set<UUID> enabled) {
-+        for (final UUID id : new HashSet<>(bars.keySet())) {
-+            final Player player = Bukkit.getPlayer(id);
-+            if (!enabled.contains(id) || player == null || !player.isOnline()) {
-+                final BossBar bar = bars.remove(id);
-+                if (bar != null && player != null) {
-+                    player.hideBossBar(bar);
-+                }
-+            }
++    // Drops all transient state for a player who is gone. Their opt-in is deliberately kept so the
++    // bars come back on reconnect.
++    private static void forget(final UUID id) {
++        ACTIVE_LOOPS.remove(id);
++        TPS_BARS.remove(id);
++        RAM_BARS.remove(id);
++    }
++
++    private static void hide(final Player player, final Map<UUID, BossBar> bars, final UUID id) {
++        final BossBar bar = bars.remove(id);
++        if (bar != null) {
++            player.hideBossBar(bar);
 +        }
 +    }
 +
@@ -224,7 +343,7 @@
 +
 +        double tps = 20.0D;
 +        double mspt = 0.0D;
-+        final TickData.TickReportData report = tickReportFor(player, now);
++        final TickData.TickReportData report = currentTickReport(now);
 +        if (report != null) {
 +            tps = Math.clamp(report.tpsData().segmentAll().average(), 0.0D, 20.0D);
 +            mspt = Math.max(0.0D, report.timePerTickData().segmentAll().average() / 1.0E6D);
@@ -259,18 +378,21 @@
 +        return MINI_MESSAGE.deserialize(tierTemplate, Placeholder.unparsed("text", text));
 +    }
 +
-+    private static TickData.TickReportData tickReportFor(final Player player, final long now) {
-+        try {
-+            final ServerLevel level = ((CraftWorld) player.getWorld()).getHandle();
-+            final int chunkX = player.getLocation().getBlockX() >> 4;
-+            final int chunkZ = player.getLocation().getBlockZ() >> 4;
-+            final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region =
-+                level.regioniser.getRegionAtSynchronised(chunkX, chunkZ);
-+            if (region != null) {
-+                return region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++    /**
++     * Tick data for the region currently being ticked, falling back to the global region schedule.
++     *
++     * <p>Callers are already running on the region that owns the player the bar belongs to, so the
++     * region being ticked <i>is</i> that player's region: there is no need to look the player's
++     * position up in the regioniser, and no window in which they could have moved to another one.
++     */
++    private static TickData.TickReportData currentTickReport(final long now) {
++        final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> region =
++            TickRegionScheduler.getCurrentRegion();
++        if (region != null) {
++            final TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++            if (report != null) {
++                return report;
 +            }
-+        } catch (final Throwable ignored) {
-+            // Fall through to the global tick data below.
 +        }
 +        try {
 +            return RegionizedServer.getGlobalTickData().getTickReport5s(now);
@@ -279,16 +401,34 @@
 +        }
 +    }
 +
++    /**
++     * The opt-in file, resolved against the server directory rather than the process working
++     * directory: a bare relative path puts the file wherever the server happened to be launched
++     * from, so starting it from elsewhere silently loses everyone's opt-in.
++     *
++     * <p>Must be called while holding {@link #IO_LOCK}.
++     */
++    private static Path dataFile() {
++        Path resolved = dataFile;
++        if (resolved == null) {
++            final MinecraftServer server = MinecraftServer.getServer();
++            resolved = server == null ? Path.of(DATA_FILE_NAME) : server.getServerDirectory().resolve(DATA_FILE_NAME);
++            dataFile = resolved;
++        }
++        return resolved;
++    }
++
 +    private static void load() {
 +        synchronized (IO_LOCK) {
 +            if (loaded) {
 +                return;
 +            }
 +            loaded = true;
-+            if (!Files.exists(DATA_FILE)) {
++            final Path source = dataFile();
++            if (!Files.exists(source)) {
 +                return;
 +            }
-+            try (Reader reader = Files.newBufferedReader(DATA_FILE, StandardCharsets.UTF_8)) {
++            try (Reader reader = Files.newBufferedReader(source, StandardCharsets.UTF_8)) {
 +                final JsonObject root = GSON.fromJson(reader, JsonObject.class);
 +                if (root == null) {
 +                    return;
@@ -296,20 +436,39 @@
 +                readInto(root, "tps", TPS_ENABLED);
 +                readInto(root, "ram", RAM_ENABLED);
 +            } catch (final Exception exception) {
-+                LOGGER.warn("Failed to load persisted SilkMC status bars from {}", DATA_FILE, exception);
++                LOGGER.warn("Failed to load persisted SilkMC status bars from {}", source, exception);
 +            }
 +        }
 +    }
 +
 +    private static void save() {
 +        synchronized (IO_LOCK) {
++            final Path target = dataFile();
 +            final JsonObject root = new JsonObject();
 +            root.add("tps", toArray(TPS_ENABLED));
 +            root.add("ram", toArray(RAM_ENABLED));
-+            try (Writer writer = Files.newBufferedWriter(DATA_FILE, StandardCharsets.UTF_8)) {
-+                GSON.toJson(root, writer);
++
++            // Write beside the target and move it into place, so that losing the process partway
++            // through cannot leave a truncated file behind. Gson writing straight into the target
++            // would, and a half-written file does not parse, which silently drops every player's
++            // opt-in rather than just the toggle that was in flight.
++            final Path temporary = target.resolveSibling(DATA_FILE_NAME + ".tmp");
++            try {
++                try (Writer writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
++                    GSON.toJson(root, writer);
++                }
++                try {
++                    Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
++                } catch (final AtomicMoveNotSupportedException ex) {
++                    Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
++                }
 +            } catch (final IOException exception) {
-+                LOGGER.warn("Failed to save SilkMC status bars to {}", DATA_FILE, exception);
++                LOGGER.warn("Failed to save SilkMC status bars to {}", target, exception);
++                try {
++                    Files.deleteIfExists(temporary);
++                } catch (final IOException ignored) {
++                    // Nothing useful to do; the next save overwrites it.
++                }
 +            }
 +        }
 +    }
@@ -335,11 +494,11 @@
 +        }
 +    }
 +
-+    private static float clamp01(final float value) {
++    static float clamp01(final float value) {
 +        return Math.max(0.0F, Math.min(1.0F, value));
 +    }
 +
-+    private static String tpsTier(final double tps) {
++    static String tpsTier(final double tps) {
 +        if (tps >= 19.0D) {
 +            return COLOR_GOOD;
 +        }
@@ -349,7 +508,7 @@
 +        return COLOR_LOW;
 +    }
 +
-+    private static String msptTier(final double mspt) {
++    static String msptTier(final double mspt) {
 +        if (mspt < 40.0D) {
 +            return COLOR_GOOD;
 +        }
@@ -359,7 +518,7 @@
 +        return COLOR_LOW;
 +    }
 +
-+    private static String pingTier(final int ping) {
++    static String pingTier(final int ping) {
 +        if (ping < 100) {
 +            return COLOR_GOOD;
 +        }
@@ -369,7 +528,7 @@
 +        return COLOR_LOW;
 +    }
 +
-+    private static String ramTier(final float percent) {
++    static String ramTier(final float percent) {
 +        if (percent < 0.6F) {
 +            return COLOR_GOOD;
 +        }
@@ -379,7 +538,7 @@
 +        return COLOR_LOW;
 +    }
 +
-+    private static BossBar.Color tpsBarColor(final double mspt) {
++    static BossBar.Color tpsBarColor(final double mspt) {
 +        if (mspt < 40.0D) {
 +            return BossBar.Color.GREEN;
 +        }
@@ -389,7 +548,7 @@
 +        return BossBar.Color.RED;
 +    }
 +
-+    private static BossBar.Color ramBarColor(final float percent) {
++    static BossBar.Color ramBarColor(final float percent) {
 +        if (percent < 0.5F) {
 +            return BossBar.Color.GREEN;
 +        }
@@ -399,8 +558,10 @@
 +        return BossBar.Color.RED;
 +    }
 +
-+    // Mirrors PurpurBars' Utils.formatBytes: base-1024 units, one decimal at MB and above.
-+    private static String formatBytes(final long bytes) {
++    // Mirrors PurpurBars' Utils.formatBytes: base-1024 units, whole numbers up to and including M
++    // ("512M", "1M"), one decimal place from G upwards ("3.9G"). A heap bar is almost always in the
++    // decimal range, which is the part that was matched against reference output.
++    static String formatBytes(final long bytes) {
 +        if (bytes < 1024L) {
 +            return String.format("%dB", bytes);
 +        }
