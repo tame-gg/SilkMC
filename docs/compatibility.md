@@ -6,7 +6,7 @@ SilkMC is designed to be more forgiving than upstream Folia without hiding corre
 
 - `silk-supported: true` is the preferred plugin metadata flag.
 - `folia-supported: true` is still accepted for upstream interoperability.
-- Every plugin JAR is inspected by `SilkPluginCompatibilityManager` before enable: metadata read, classes byte-scanned for API and NMS usage, then assigned one of `SAFE` / `COMPATIBLE` / `UNSAFE` / `UNKNOWN`.
+- Every plugin JAR is inspected by `SilkPluginCompatibilityManager` before enable: metadata read, classes parsed for real API and NMS references, then assigned one of `SAFE` / `COMPATIBLE` / `UNSAFE` / `UNKNOWN`. The scan is structural (supertypes, descriptors, and the owner/name of type and call instructions), so a jar that merely contains a matching *string* is not classified on it.
 - Legacy Bukkit scheduler calls (`runTask`, `runTaskLater`, `runTaskTimer`, `callSyncMethod`) are bridged to the Global Region Scheduler.
 - Legacy synchronous `Entity.teleport()` and `Player.teleport()` are bridged to `teleportAsync` when the call is made on the owning region; cross-region sync teleports warn and return optimistically.
 - The plugin lifecycle (enable/disable) is wrapped in a compatibility context so failures can be classified and reported with operator-friendly messages.
@@ -17,8 +17,8 @@ SilkMC is designed to be more forgiving than upstream Folia without hiding corre
 | --- | --- | --- |
 | `SAFE` | declares `silk-supported` or `folia-supported` | load normally |
 | `COMPATIBLE` | uses Bukkit/Spigot/Paper APIs but no unsafe patterns | load under shim layer (scheduler bridge, teleport bridge) |
-| `UNSAFE` | async scheduling + direct NMS-level world access | refuse to load; print structured rejection log; continue startup |
-| `UNKNOWN` | no detectable APIs or unreadable JAR | refuse under strict-mode; allowed with warning if `allow-unknown-plugins: true` |
+| `UNSAFE` | references `org/spigotmc/AsyncCatcher`, which is only done to defeat the thread checks SilkMC relies on | refuse to load; print structured rejection log; continue startup |
+| `UNKNOWN` | calls a main-thread check, touches CraftBukkit/NMS internals or the legacy sync scheduler, or the JAR could not be read | refuse under strict-mode; allowed with warning if `allow-unknown-plugins: true` |
 
 ## Modes
 

@@ -1,20 +1,17 @@
 --- /dev/null
 +++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
-@@ -1,0 +_,457 @@
+@@ -1,0 +_,635 @@
 +package gg.tame.silkmc.server.compat;
 +
 +import io.papermc.paper.plugin.configuration.PluginMeta;
 +import java.io.IOException;
 +import java.io.InputStream;
-+import java.nio.charset.StandardCharsets;
 +import java.nio.file.Path;
 +import java.text.DecimalFormat;
 +import java.util.ArrayList;
-+import java.util.Collection;
-+import java.util.Collections;
 +import java.util.Comparator;
 +import java.util.EnumMap;
-+import java.util.LinkedHashMap;
++import java.util.Enumeration;
 +import java.util.List;
 +import java.util.Locale;
 +import java.util.Map;
@@ -23,11 +20,16 @@
 +import java.util.jar.JarEntry;
 +import java.util.jar.JarFile;
 +import java.util.logging.Logger;
-+import java.util.zip.ZipEntry;
 +import net.kyori.adventure.text.Component;
 +import net.kyori.adventure.text.format.NamedTextColor;
 +import net.minecraft.server.MinecraftServer;
 +import org.jetbrains.annotations.Nullable;
++import org.objectweb.asm.ClassReader;
++import org.objectweb.asm.ClassVisitor;
++import org.objectweb.asm.FieldVisitor;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.Type;
 +
 +public final class SilkPluginCompatibilityManager {
 +
@@ -43,17 +45,18 @@
 +    public static void inspectAndEnforce(final Path source, final PluginMeta meta) {
 +        final SilkPluginCompatibility.OverrideEntry override = SilkPluginCompatibility.overrideFor(meta.getName());
 +        final String key = normalizePluginName(meta.getName());
-+        final Inspection inspection = INSPECTIONS.compute(key, (ignored, existing) -> {
-+            final Path absoluteSource = source.toAbsolutePath().normalize();
-+            if (existing != null && existing.matches(absoluteSource, meta)) {
-+                return existing;
-+            }
-+            try {
-+                return inspect(absoluteSource, meta);
-+            } catch (final IOException ex) {
-+                throw new RuntimeException("Failed to inspect plugin '" + meta.getName() + "'", ex);
-+            }
-+        });
++        // Deliberately computed outside the map: inspection reads and parses every class in the jar,
++        // and doing that inside a ConcurrentHashMap remapping function would hold a bin lock across
++        // all of that I/O.
++        final Path absoluteSource = source.toAbsolutePath().normalize();
++        final Inspection cached = INSPECTIONS.get(key);
++        final Inspection inspection;
++        if (cached != null && cached.matches(absoluteSource, meta)) {
++            inspection = cached;
++        } else {
++            inspection = inspect(absoluteSource, meta);
++            INSPECTIONS.put(key, inspection);
++        }
 +
 +        final Report report = buildReport(inspection, meta, override);
 +        REPORTS.put(key, report);
@@ -163,40 +166,38 @@
 +        return new RegionStatus(regions.size(), worstMspt);
 +    }
 +
-+    private static Inspection inspect(final Path source, final PluginMeta meta) throws IOException {
++    /**
++     * Scans every class in a plugin jar for the references SilkMC classifies on.
++     *
++     * <p>The scan is structural: each class is parsed and only real symbol references are
++     * considered - supertypes, field and method descriptors, and the owner/name of every
++     * instruction that touches a type or calls a method. Matching against the raw bytes of a class
++     * instead would also hit string literals, resource names and unrelated constant-pool text, and
++     * that produced false positives serious enough to block correct plugins: any jar that merely
++     * <i>contained</i> the text {@code isPrimaryThread} - including one that never calls it, or one
++     * that shades a library mentioning it - was classified UNSAFE and refused to load.
++     *
++     * <p>A jar that cannot be opened, or an individual class this ASM cannot parse (truncated, or
++     * compiled for a newer class-file version), yields no signals either way. That is recorded
++     * rather than silently read as "clean": see {@link #classifyHeuristically}.
++     */
++    private static Inspection inspect(final Path source, final PluginMeta meta) {
 +        final List<String> technicalDetails = new ArrayList<>();
-+        int scannedClassCount = 0;
-+        boolean referencesCraftBukkit = false;
-+        boolean referencesNms = false;
-+        boolean referencesLegacyThreading = false;
-+        boolean referencesLegacyScheduler = false;
++        final Signals signals = new Signals();
++        boolean scanFailed = false;
 +
-+        try (JarFile jar = new JarFile(source.toFile())) {
-+            final var entries = jar.entries();
-+            while (entries.hasMoreElements()) {
-+                final JarEntry entry = entries.nextElement();
-+                if (!(entry instanceof ZipEntry zipEntry) || zipEntry.isDirectory() || !entry.getName().endsWith(".class")) {
-+                    continue;
-+                }
-+                ++scannedClassCount;
-+                try (InputStream input = jar.getInputStream(entry)) {
-+                    final String byteString = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
-+                    referencesCraftBukkit |= byteString.contains("org/bukkit/craftbukkit/");
-+                    referencesNms |= byteString.contains("net/minecraft/") || byteString.contains("com/mojang/brigadier/");
-+                    referencesLegacyThreading |= byteString.contains("org/spigotmc/AsyncCatcher")
-+                        || byteString.contains("isPrimaryThread")
-+                        || byteString.contains("thread failed main thread check");
-+                    referencesLegacyScheduler |= byteString.contains("scheduleSyncDelayedTask")
-+                        || byteString.contains("scheduleSyncRepeatingTask")
-+                        || byteString.contains("callSyncMethod");
-+                }
-+            }
++        try {
++            scanJar(source, signals);
++        } catch (final IOException ex) {
++            scanFailed = true;
++            LOGGER.warning("Could not read plugin jar '" + source + "' for compatibility inspection ("
++                + ex + "); classifying '" + meta.getName() + "' as UNKNOWN.");
 +        }
 +
 +        final NmsAccessLevel nmsAccessLevel;
-+        if (referencesNms) {
++        if (signals.nms) {
 +            nmsAccessLevel = NmsAccessLevel.NMS;
-+        } else if (referencesCraftBukkit) {
++        } else if (signals.craftBukkit) {
 +            nmsAccessLevel = NmsAccessLevel.CRAFTBUKKIT;
 +        } else {
 +            nmsAccessLevel = NmsAccessLevel.NONE;
@@ -205,11 +206,17 @@
 +        technicalDetails.add("Source jar: " + source);
 +        technicalDetails.add("Main class: " + meta.getMainClass());
 +        technicalDetails.add("Declared compatibility metadata: " + yesNo(meta.isSilkSupported() || meta.isFoliaSupported()));
-+        technicalDetails.add("Scanned classes: " + scannedClassCount);
-+        technicalDetails.add("Detected legacy scheduler references: " + yesNo(referencesLegacyScheduler));
-+        technicalDetails.add("Detected legacy thread checks: " + yesNo(referencesLegacyThreading));
-+        technicalDetails.add("Detected CraftBukkit internals: " + yesNo(referencesCraftBukkit));
-+        technicalDetails.add("Detected NMS internals: " + yesNo(referencesNms));
++        technicalDetails.add("Scanned classes: " + signals.scannedClasses);
++        if (scanFailed) {
++            technicalDetails.add("Bytecode scan: FAILED (jar could not be read)");
++        } else if (signals.unreadableClasses > 0) {
++            technicalDetails.add("Unparseable classes skipped: " + signals.unreadableClasses);
++        }
++        technicalDetails.add("Calls legacy sync scheduler APIs: " + yesNo(signals.legacyScheduler));
++        technicalDetails.add("Calls main-thread checks: " + yesNo(signals.assumesMainThread));
++        technicalDetails.add("References AsyncCatcher thread-check internals: " + yesNo(signals.defeatsThreadChecks));
++        technicalDetails.add("References CraftBukkit internals: " + yesNo(signals.craftBukkit));
++        technicalDetails.add("References NMS internals: " + yesNo(signals.nms));
 +
 +        return new Inspection(
 +            source,
@@ -217,15 +224,43 @@
 +            meta.getVersion(),
 +            meta,
 +            determineFamily(meta),
-+            scannedClassCount,
++            signals.scannedClasses,
 +            nmsAccessLevel,
 +            meta.isSilkSupported() || meta.isFoliaSupported(),
-+            referencesLegacyThreading,
-+            referencesLegacyScheduler,
-+            referencesCraftBukkit,
-+            referencesNms,
++            scanFailed,
++            signals.defeatsThreadChecks,
++            signals.assumesMainThread,
++            signals.legacyScheduler,
++            signals.craftBukkit,
++            signals.nms,
 +            List.copyOf(technicalDetails)
 +        );
++    }
++
++    /**
++     * Accumulates the references made by every class in {@code source} into {@code signals}.
++     *
++     * <p>Package-private so the scan can be tested against purpose-built jars without standing a
++     * server up. Throws only if the jar itself cannot be opened; a single class that cannot be
++     * parsed is counted and skipped, since it is evidence of nothing either way.
++     */
++    static void scanJar(final Path source, final Signals signals) throws IOException {
++        final ClassVisitor scanner = new ReferenceScanner(signals);
++        try (JarFile jar = new JarFile(source.toFile())) {
++            final Enumeration<JarEntry> entries = jar.entries();
++            while (entries.hasMoreElements()) {
++                final JarEntry entry = entries.nextElement();
++                if (entry.isDirectory() || !entry.getName().endsWith(".class")) {
++                    continue;
++                }
++                try (InputStream input = jar.getInputStream(entry)) {
++                    new ClassReader(input).accept(scanner, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
++                    ++signals.scannedClasses;
++                } catch (final IOException | RuntimeException ex) {
++                    ++signals.unreadableClasses;
++                }
++            }
++        }
 +    }
 +
 +    private static Report buildReport(final Inspection inspection, final PluginMeta meta, final @Nullable SilkPluginCompatibility.OverrideEntry override) {
@@ -273,14 +308,25 @@
 +        );
 +    }
 +
-+    private static Classification classifyHeuristically(final Inspection inspection, final List<String> reasons) {
++    static Classification classifyHeuristically(final Inspection inspection, final List<String> reasons) {
 +        if (inspection.declaredSupported()) {
 +            reasons.add("Declares `silk-supported: true` or legacy `folia-supported: true` metadata.");
 +            return Classification.SAFE;
 +        }
-+        if (inspection.referencesLegacyThreading()) {
-+            reasons.add("Bytecode references legacy single-thread or async-catcher checks that SilkMC cannot safely emulate.");
++        if (inspection.scanFailed()) {
++            reasons.add("The plugin jar could not be scanned, so nothing is known about what it touches.");
++            return Classification.UNKNOWN;
++        }
++        if (inspection.defeatsThreadChecks()) {
++            reasons.add("Bytecode references AsyncCatcher directly, which is only done to disable the thread checks SilkMC relies on.");
 +            return Classification.UNSAFE;
++        }
++        // Calling isPrimaryThread() is an assumption worth an operator's attention, not a broken
++        // plugin: the usual reason to call it is to be careful about threading. It lands in UNKNOWN
++        // alongside the other "review this" signals rather than blocking the plugin outright.
++        if (inspection.assumesMainThread()) {
++            reasons.add("Calls a main-thread check, which has no single answer under region threading; review how the result is used.");
++            return Classification.UNKNOWN;
 +        }
 +        if (inspection.referencesCraftBukkit() || inspection.referencesNms() || inspection.referencesLegacyScheduler()) {
 +            reasons.add("Touches legacy server internals or scheduler APIs and should be reviewed by an operator.");
@@ -308,12 +354,24 @@
 +        final String pluginName = report.pluginName();
 +        final String metadataMessage = "Plugin '" + pluginName + "' does not declare `silk-supported: true` (legacy `folia-supported: true` is also accepted).";
 +
-+        if (report.classification() == Classification.UNSAFE && !report.forceLoad()) {
++        if (report.classification() == Classification.UNSAFE) {
++            if (!report.forceLoad()) {
++                return new Decision(
++                    true,
++                    false,
++                    metadataMessage,
++                    "Plugin '" + pluginName + "' was classified as UNSAFE by SilkMC compatibility inspection. Set an override only after validating it on a staging server."
++                );
++            }
++            // Force-loading past UNSAFE is the operator's call, but it is the single riskiest thing
++            // they can configure here, so it warns unconditionally rather than only when
++            // warn-on-load is enabled.
 +            return new Decision(
-+                true,
 +                false,
-+                metadataMessage,
-+                "Plugin '" + pluginName + "' was classified as UNSAFE by SilkMC compatibility inspection. Set an override only after validating it on a staging server."
++                true,
++                "Plugin '" + pluginName + "' is classified UNSAFE and is being force-loaded by operator override. "
++                    + "Region-threading correctness is not guaranteed for this server while it is enabled.",
++                ""
 +            );
 +        }
 +
@@ -391,7 +449,7 @@
 +        return Component.text(Integer.toString(count), color);
 +    }
 +
-+    private record Inspection(
++    record Inspection(
 +        Path source,
 +        String pluginName,
 +        String version,
@@ -400,7 +458,9 @@
 +        int scannedClassCount,
 +        NmsAccessLevel nmsAccessLevel,
 +        boolean declaredSupported,
-+        boolean referencesLegacyThreading,
++        boolean scanFailed,
++        boolean defeatsThreadChecks,
++        boolean assumesMainThread,
 +        boolean referencesLegacyScheduler,
 +        boolean referencesCraftBukkit,
 +        boolean referencesNms,
@@ -414,6 +474,127 @@
 +    }
 +
 +    private record Decision(boolean blocked, boolean logWarning, String warningMessage, String failureMessage) {
++    }
++
++    /** Accumulates what a jar's bytecode actually refers to. Not thread-safe; scanned serially. */
++    static final class Signals {
++        int scannedClasses;
++        int unreadableClasses;
++        boolean craftBukkit;
++        boolean nms;
++        boolean defeatsThreadChecks;
++        boolean assumesMainThread;
++        boolean legacyScheduler;
++
++        /** Records a reference to an internal class name, which may be an array descriptor. */
++        void type(final String internalName) {
++            if (internalName == null || internalName.isEmpty()) {
++                return;
++            }
++            if (internalName.charAt(0) == '[') {
++                this.descriptor(internalName);
++                return;
++            }
++            this.flag(internalName);
++        }
++
++        /** Records every object type mentioned by a field or method descriptor. */
++        void descriptor(final String descriptor) {
++            if (descriptor == null || descriptor.isEmpty()) {
++                return;
++            }
++            if (descriptor.charAt(0) == '(') {
++                for (final Type argument : Type.getArgumentTypes(descriptor)) {
++                    this.objectType(argument);
++                }
++                this.objectType(Type.getReturnType(descriptor));
++            } else {
++                this.objectType(Type.getType(descriptor));
++            }
++        }
++
++        /** Records a call by owner and name, for the APIs whose <em>use</em> is the signal. */
++        void call(final String owner, final String name) {
++            if (owner == null || !owner.startsWith("org/bukkit/")) {
++                return;
++            }
++            switch (name) {
++                case "isPrimaryThread" -> this.assumesMainThread = true;
++                case "scheduleSyncDelayedTask", "scheduleSyncRepeatingTask", "callSyncMethod" -> this.legacyScheduler = true;
++                default -> {
++                }
++            }
++        }
++
++        private void objectType(final Type type) {
++            final Type element = type.getSort() == Type.ARRAY ? type.getElementType() : type;
++            if (element.getSort() == Type.OBJECT) {
++                this.flag(element.getInternalName());
++            }
++        }
++
++        private void flag(final String internalName) {
++            if (internalName.startsWith("org/bukkit/craftbukkit/")) {
++                this.craftBukkit = true;
++            } else if (internalName.startsWith("net/minecraft/") || internalName.startsWith("com/mojang/brigadier/")) {
++                this.nms = true;
++            } else if (internalName.equals("org/spigotmc/AsyncCatcher")) {
++                this.defeatsThreadChecks = true;
++            }
++        }
++    }
++
++    /** Feeds every type and call reference in a class into a {@link Signals}. */
++    static final class ReferenceScanner extends ClassVisitor {
++
++        private final Signals signals;
++        private final MethodVisitor methodScanner;
++
++        ReferenceScanner(final Signals signals) {
++            super(Opcodes.ASM9);
++            this.signals = signals;
++            this.methodScanner = new MethodVisitor(Opcodes.ASM9) {
++                @Override
++                public void visitTypeInsn(final int opcode, final String type) {
++                    signals.type(type);
++                }
++
++                @Override
++                public void visitFieldInsn(final int opcode, final String owner, final String name, final String descriptor) {
++                    signals.type(owner);
++                    signals.descriptor(descriptor);
++                }
++
++                @Override
++                public void visitMethodInsn(final int opcode, final String owner, final String name, final String descriptor, final boolean isInterface) {
++                    signals.type(owner);
++                    signals.descriptor(descriptor);
++                    signals.call(owner, name);
++                }
++            };
++        }
++
++        @Override
++        public void visit(final int version, final int access, final String name, final String signature, final String superName, final String[] interfaces) {
++            this.signals.type(superName);
++            if (interfaces != null) {
++                for (final String implemented : interfaces) {
++                    this.signals.type(implemented);
++                }
++            }
++        }
++
++        @Override
++        public FieldVisitor visitField(final int access, final String name, final String descriptor, final String signature, final Object value) {
++            this.signals.descriptor(descriptor);
++            return null;
++        }
++
++        @Override
++        public MethodVisitor visitMethod(final int access, final String name, final String descriptor, final String signature, final String[] exceptions) {
++            this.signals.descriptor(descriptor);
++            return this.methodScanner;
++        }
 +    }
 +
 +    public record RegionStatus(int regionCount, double worstRegionMspt) {
@@ -436,12 +617,9 @@
 +        List<String> reasons,
 +        List<String> technicalDetails
 +    ) {
-+        public List<String> reasons() {
-+            return this.reasons == null ? Collections.emptyList() : this.reasons;
-+        }
-+
-+        public List<String> technicalDetails() {
-+            return this.technicalDetails == null ? Collections.emptyList() : this.technicalDetails;
++        public Report {
++            reasons = reasons == null ? List.of() : List.copyOf(reasons);
++            technicalDetails = technicalDetails == null ? List.of() : List.copyOf(technicalDetails);
 +        }
 +    }
 +
