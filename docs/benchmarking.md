@@ -5,7 +5,9 @@ SilkMC ships with upstream profiling surfaces plus the project's own scheduler b
 ## Tooling
 
 - `/tps` - per-region TPS readout
-- `/silkmc tps` (upstream `/tps` alias preserved) - aggregated TPS
+- `/silkmc status` - region count, worst-region MSPT, and compatibility classification totals
+- `/tpsbar` - live per-player boss bar showing TPS, MSPT, and ping for the player's own region
+- `/rambar` - live per-player boss bar showing heap usage
 - spark integration - profile any region or async thread
 - startup version and build metadata - exposed via `/version`
 - GitHub Actions build artifacts - repeatable binaries from `build.yml`

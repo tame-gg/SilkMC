@@ -14,7 +14,7 @@ It preserves Folia's regional multithreading architecture while presenting SilkM
 ## Current state
 
 - Upstream baseline: Folia `26.2` (`ver/26.2.x`)
-- Project stage: `v0.2.0-alpha`
+- Project stage: `v0.2.5-alpha`
 - Java toolchain: JDK 25
 - Build system: Gradle + Paperweight patch workflow
 
@@ -56,6 +56,20 @@ The plain `silkmc-server` jar is a module artifact and is not intended to be lau
 - `docs/` - architecture, compatibility, benchmarking, and contributor docs
 - `examples/server/` - example setup and config snippets
 
+## Commands
+
+| Command | Permission | Purpose |
+| --- | --- | --- |
+| `/silkmc status` | `silkmc.command` | Region count, worst-region MSPT, and compatibility classification totals |
+| `/silkmc plugins [page]` | `silkmc.command` | Paged list of cached plugin compatibility reports |
+| `/silkmc report <plugin>` | `silkmc.command` | Full stored report for one plugin, including override details |
+| `/silkmc reload` | `silkmc.command` | Reload `silkmc-compatibility.yml` and `silkmc-plugin-overrides.yml` |
+| `/tpsbar` | `silkmc.bars` | Toggle a live boss bar with TPS, MSPT, and ping for your own region |
+| `/rambar` | `silkmc.bars` | Toggle a live boss bar with heap usage |
+
+Both permissions default to operators. The status bars are per-player and persist across
+reconnects and restarts.
+
 ## Development workflow
 
 ```powershell
@@ -75,6 +89,11 @@ The plain `silkmc-server` jar is a module artifact and is not intended to be lau
 - [Plugin Compatibility Reports](docs/testing/plugin-compatibility-reports.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Upstream and Attribution](docs/development/upstream.md)
+- [Alpha Release Notes (v0.2.5)](docs/releases/v0.2.5-alpha.md)
+- [Alpha Release Notes (v0.2.4)](docs/releases/v0.2.4-alpha.md)
+- [Alpha Release Notes (v0.2.3)](docs/releases/v0.2.3-alpha.md)
+- [Alpha Release Notes (v0.2.2)](docs/releases/v0.2.2-alpha.md)
+- [Alpha Release Notes (v0.2.1)](docs/releases/v0.2.1-alpha.md)
 - [Alpha Release Notes (v0.2.0)](docs/releases/v0.2.0-alpha.md)
 - [Alpha Release Notes (v0.1.5)](docs/releases/v0.1.5-alpha.md)
 - [Alpha Release Notes (v0.1.4)](docs/releases/v0.1.4-alpha.md)
