@@ -1,0 +1,162 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/compat/SilkPluginClassificationTest.java
+@@ -1,0 +_,159 @@
++package gg.tame.silkmc.server.compat;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Classification;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Inspection;
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.NmsAccessLevel;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Covers how scan signals map onto a {@link Classification}, which is what decides whether a plugin
++ * is loaded, warned about, or refused.
++ */
++class SilkPluginClassificationTest {
++
++    /** An inspection with no signals set; individual tests flip the one they are about. */
++    private static Builder inspection() {
++        return new Builder();
++    }
++
++    private static final class Builder {
++        private boolean declaredSupported;
++        private boolean scanFailed;
++        private boolean defeatsThreadChecks;
++        private boolean assumesMainThread;
++        private boolean legacyScheduler;
++        private boolean craftBukkit;
++        private boolean nms;
++
++        Builder declaredSupported() {
++            this.declaredSupported = true;
++            return this;
++        }
++
++        Builder scanFailed() {
++            this.scanFailed = true;
++            return this;
++        }
++
++        Builder defeatsThreadChecks() {
++            this.defeatsThreadChecks = true;
++            return this;
++        }
++
++        Builder assumesMainThread() {
++            this.assumesMainThread = true;
++            return this;
++        }
++
++        Builder legacyScheduler() {
++            this.legacyScheduler = true;
++            return this;
++        }
++
++        Builder craftBukkit() {
++            this.craftBukkit = true;
++            return this;
++        }
++
++        Builder nms() {
++            this.nms = true;
++            return this;
++        }
++
++        Inspection build() {
++            return new Inspection(
++                Path.of("example.jar"),
++                "Example",
++                "1.0.0",
++                null,
++                "com.example",
++                1,
++                this.nms ? NmsAccessLevel.NMS : this.craftBukkit ? NmsAccessLevel.CRAFTBUKKIT : NmsAccessLevel.NONE,
++                this.declaredSupported,
++                this.scanFailed,
++                this.defeatsThreadChecks,
++                this.assumesMainThread,
++                this.legacyScheduler,
++                this.craftBukkit,
++                this.nms,
++                List.of()
++            );
++        }
++    }
++
++    private final List<String> reasons = new ArrayList<>();
++
++    private Classification classify(final Builder builder) {
++        return SilkPluginCompatibilityManager.classifyHeuristically(builder.build(), this.reasons);
++    }
++
++    @Test
++    @DisplayName("declared compatibility metadata wins over every other signal")
++    void declaredSupportIsSafe() {
++        assertEquals(Classification.SAFE, this.classify(inspection().declaredSupported()));
++        assertEquals(Classification.SAFE, this.classify(inspection().declaredSupported().defeatsThreadChecks()));
++    }
++
++    @Test
++    @DisplayName("a clean scan is compatible")
++    void cleanScanIsCompatible() {
++        assertEquals(Classification.COMPATIBLE, this.classify(inspection()));
++    }
++
++    @Test
++    @DisplayName("only AsyncCatcher makes a plugin unsafe")
++    void onlyAsyncCatcherIsUnsafe() {
++        assertEquals(Classification.UNSAFE, this.classify(inspection().defeatsThreadChecks()));
++    }
++
++    @Test
++    @DisplayName("a main-thread check is reviewable, not unsafe")
++    void mainThreadCheckIsUnknownRatherThanUnsafe() {
++        // A plugin calling isPrimaryThread() is usually being careful about threading. Treating
++        // that as UNSAFE refused correct plugins outright; it belongs in UNKNOWN, where the
++        // operator decides.
++        assertEquals(Classification.UNKNOWN, this.classify(inspection().assumesMainThread()));
++    }
++
++    @Test
++    @DisplayName("server internals and legacy scheduler use land in unknown")
++    void internalsAreUnknown() {
++        assertEquals(Classification.UNKNOWN, this.classify(inspection().craftBukkit()));
++        assertEquals(Classification.UNKNOWN, this.classify(inspection().nms()));
++        assertEquals(Classification.UNKNOWN, this.classify(inspection().legacyScheduler()));
++    }
++
++    @Test
++    @DisplayName("a jar that could not be scanned is unknown, never compatible")
++    void failedScanIsUnknown() {
++        // The signals are all false because nothing was read, not because the plugin is clean.
++        assertEquals(Classification.UNKNOWN, this.classify(inspection().scanFailed()));
++    }
++
++    @Test
++    @DisplayName("every classification records why")
++    void classificationAlwaysExplainsItself() {
++        for (final Builder builder : List.of(
++            inspection(),
++            inspection().declaredSupported(),
++            inspection().defeatsThreadChecks(),
++            inspection().assumesMainThread(),
++            inspection().scanFailed(),
++            inspection().nms()
++        )) {
++            this.reasons.clear();
++            this.classify(builder);
++            assertEquals(1, this.reasons.size(), "expected exactly one reason");
++            assertFalse(this.reasons.get(0).isBlank());
++            assertTrue(this.reasons.get(0).endsWith("."), "reasons are shown to operators verbatim");
++        }
++    }
++}

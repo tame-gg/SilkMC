@@ -1,0 +1,202 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/scoreboard/WeakScoreboardSetTest.java
+@@ -1,0 +_,199 @@
++package gg.tame.silkmc.server.scoreboard;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++
++import java.util.ArrayList;
++import java.util.Iterator;
++import java.util.List;
++import java.util.NoSuchElementException;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicReference;
++import org.bukkit.craftbukkit.scoreboard.CraftScoreboard;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Covers the registry that vanilla criteria updates walk on every region thread.
++ */
++class WeakScoreboardSetTest {
++
++    private static List<CraftScoreboard> drain(final WeakScoreboardSet set) {
++        final List<CraftScoreboard> seen = new ArrayList<>();
++        for (final CraftScoreboard scoreboard : set) {
++            seen.add(scoreboard);
++        }
++        return seen;
++    }
++
++    @Test
++    @DisplayName("tracks what was registered, in registration order")
++    void iteratesRegisteredScoreboards() {
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final CraftScoreboard first = mock(CraftScoreboard.class);
++        final CraftScoreboard second = mock(CraftScoreboard.class);
++
++        set.add(first);
++        set.add(second);
++
++        assertEquals(List.of(first, second), drain(set));
++    }
++
++    @Test
++    @DisplayName("registering the same scoreboard twice does not double it")
++    void registrationIsIdempotent() {
++        // A duplicate entry means every criteria update is applied to that scoreboard twice.
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final CraftScoreboard scoreboard = mock(CraftScoreboard.class);
++
++        set.add(scoreboard);
++        set.add(scoreboard);
++
++        assertEquals(1, drain(set).size());
++    }
++
++    @Test
++    @DisplayName("rejects null rather than storing a permanently dead entry")
++    void rejectsNull() {
++        assertThrows(IllegalArgumentException.class, () -> new WeakScoreboardSet().add(null));
++    }
++
++    @Test
++    @DisplayName("an empty set iterates cleanly")
++    void emptySetIteratesCleanly() {
++        final Iterator<CraftScoreboard> iterator = new WeakScoreboardSet().iterator();
++
++        assertFalse(iterator.hasNext());
++        assertThrows(NoSuchElementException.class, iterator::next);
++    }
++
++    @Test
++    @DisplayName("next() without hasNext() still works and ends correctly")
++    void nextWithoutHasNext() {
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final CraftScoreboard scoreboard = mock(CraftScoreboard.class);
++        set.add(scoreboard);
++
++        final Iterator<CraftScoreboard> iterator = set.iterator();
++        assertSame(scoreboard, iterator.next());
++        assertThrows(NoSuchElementException.class, iterator::next);
++    }
++
++    @Test
++    @DisplayName("collected scoreboards disappear and are pruned")
++    void collectedScoreboardsAreDroppedAndPruned() throws InterruptedException {
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final CraftScoreboard retained = mock(CraftScoreboard.class);
++        set.add(retained);
++        set.add(mock(CraftScoreboard.class)); // Never referenced again.
++
++        // Wait for the collector to clear the unreachable entry rather than assuming one GC does it.
++        boolean collected = false;
++        for (int attempt = 0; attempt < 50 && !collected; ++attempt) {
++            System.gc();
++            collected = drain(set).size() == 1;
++            if (!collected) {
++                TimeUnit.MILLISECONDS.sleep(20L);
++            }
++        }
++
++        assertTrue(collected, "the unreachable scoreboard should stop being iterated");
++        assertEquals(List.of(retained), drain(set));
++
++        // Pruning happens on the next registration, not on the read path.
++        final CraftScoreboard later = mock(CraftScoreboard.class);
++        set.add(later);
++        assertEquals(List.of(retained, later), drain(set));
++    }
++
++    @Test
++    @DisplayName("iteration is a snapshot, so a concurrent registration cannot break a reader")
++    void iterationIsUnaffectedByConcurrentRegistration() throws InterruptedException {
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final CraftScoreboard first = mock(CraftScoreboard.class);
++        set.add(first);
++
++        final Iterator<CraftScoreboard> iterator = set.iterator();
++        final CraftScoreboard added = mock(CraftScoreboard.class);
++
++        // A region thread is mid-walk while another thread registers a scoreboard.
++        final CountDownLatch done = new CountDownLatch(1);
++        final AtomicReference<Throwable> failure = new AtomicReference<>();
++        final Thread registrar = new Thread(() -> {
++            try {
++                set.add(added);
++            } catch (final Throwable throwable) {
++                failure.set(throwable);
++            } finally {
++                done.countDown();
++            }
++        }, "registrar");
++        registrar.start();
++        assertTrue(done.await(10L, TimeUnit.SECONDS), "registration should not block on a reader");
++        registrar.join();
++
++        assertEquals(null, failure.get());
++        assertSame(first, iterator.next());
++        assertFalse(iterator.hasNext(), "an in-flight iterator sees the snapshot it started with");
++        assertEquals(List.of(first, added), drain(set), "a new iterator sees the registration");
++    }
++
++    @Test
++    @DisplayName("concurrent readers and writers neither throw nor lose entries")
++    void survivesConcurrentUse() throws InterruptedException {
++        final WeakScoreboardSet set = new WeakScoreboardSet();
++        final List<CraftScoreboard> registered = new ArrayList<>();
++        for (int i = 0; i < 100; ++i) {
++            registered.add(mock(CraftScoreboard.class));
++        }
++
++        final int readers = 4;
++        final CountDownLatch start = new CountDownLatch(1);
++        final CountDownLatch finished = new CountDownLatch(readers + 1);
++        final AtomicReference<Throwable> failure = new AtomicReference<>();
++
++        for (int i = 0; i < readers; ++i) {
++            new Thread(() -> {
++                try {
++                    start.await();
++                    for (int pass = 0; pass < 200; ++pass) {
++                        for (final CraftScoreboard scoreboard : set) {
++                            if (scoreboard == null) {
++                                throw new AssertionError("iteration yielded a cleared reference");
++                            }
++                        }
++                    }
++                } catch (final Throwable throwable) {
++                    failure.compareAndSet(null, throwable);
++                } finally {
++                    finished.countDown();
++                }
++            }, "reader-" + i).start();
++        }
++
++        new Thread(() -> {
++            try {
++                start.await();
++                for (final CraftScoreboard scoreboard : registered) {
++                    set.add(scoreboard);
++                }
++            } catch (final Throwable throwable) {
++                failure.compareAndSet(null, throwable);
++            } finally {
++                finished.countDown();
++            }
++        }, "writer").start();
++
++        start.countDown();
++        assertTrue(finished.await(30L, TimeUnit.SECONDS), "threads should finish");
++        if (failure.get() != null) {
++            throw new AssertionError("concurrent use failed", failure.get());
++        }
++        assertEquals(registered, drain(set));
++    }
++}

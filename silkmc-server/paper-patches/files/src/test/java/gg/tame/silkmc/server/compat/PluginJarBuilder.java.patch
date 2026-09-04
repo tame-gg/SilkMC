@@ -1,0 +1,114 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/compat/PluginJarBuilder.java
+@@ -1,0 +_,111 @@
++package gg.tame.silkmc.server.compat;
++
++import java.io.IOException;
++import java.io.OutputStream;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.function.Consumer;
++import java.util.jar.JarEntry;
++import java.util.jar.JarOutputStream;
++import org.objectweb.asm.ClassWriter;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/**
++ * Builds throwaway plugin jars containing generated classes, so the compatibility scanner can be
++ * pointed at bytecode that exercises one specific pattern at a time.
++ *
++ * <p>Classes are generated rather than compiled from fixtures because the distinction the scanner
++ * has to draw - a real reference to a symbol versus the same text sitting in the constant pool as a
++ * string - is only expressible at the bytecode level.
++ */
++final class PluginJarBuilder {
++
++    private final List<Entry> entries = new ArrayList<>();
++
++    private record Entry(String name, byte[] content) {
++    }
++
++    /** Adds a generated class whose {@code run()} method is written by {@code body}. */
++    PluginJarBuilder withClass(final String internalName, final Consumer<MethodVisitor> body) {
++        final ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
++        writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);
++
++        final MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", "()V", null, null);
++        method.visitCode();
++        body.accept(method);
++        method.visitInsn(Opcodes.RETURN);
++        method.visitMaxs(0, 0);
++        method.visitEnd();
++
++        writer.visitEnd();
++        this.entries.add(new Entry(internalName + ".class", writer.toByteArray()));
++        return this;
++    }
++
++    /** Adds an empty generated class, for counting purposes. */
++    PluginJarBuilder withClass(final String internalName) {
++        return this.withClass(internalName, method -> {
++        });
++    }
++
++    /** Adds a {@code .class} entry that is not a parseable class file. */
++    PluginJarBuilder withUnparseableClass(final String internalName) {
++        this.entries.add(new Entry(internalName + ".class", "not a class file".getBytes(StandardCharsets.UTF_8)));
++        return this;
++    }
++
++    /** Adds a non-class entry, which the scan must ignore entirely. */
++    PluginJarBuilder withResource(final String name, final String content) {
++        this.entries.add(new Entry(name, content.getBytes(StandardCharsets.UTF_8)));
++        return this;
++    }
++
++    Path writeTo(final Path jar) throws IOException {
++        try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar))) {
++            for (final Entry entry : this.entries) {
++                out.putNextEntry(new JarEntry(entry.name()));
++                out.write(entry.content());
++                out.closeEntry();
++            }
++        }
++        return jar;
++    }
++
++    /** Convenience for writing raw bytes, e.g. a jar that is not a valid archive at all. */
++    static Path writeRaw(final Path target, final String content) throws IOException {
++        try (OutputStream out = Files.newOutputStream(target)) {
++            out.write(content.getBytes(StandardCharsets.UTF_8));
++        }
++        return target;
++    }
++
++    // --- method bodies -------------------------------------------------------------------------
++
++    /** Loads {@code text} as a string constant and discards it. */
++    static Consumer<MethodVisitor> loadsStringConstant(final String text) {
++        return method -> {
++            method.visitLdcInsn(text);
++            method.visitInsn(Opcodes.POP);
++        };
++    }
++
++    /** Emits a static call to {@code owner.name()} returning {@code returnDescriptor}. */
++    static Consumer<MethodVisitor> callsStatic(final String owner, final String name, final String returnDescriptor) {
++        return method -> {
++            method.visitMethodInsn(Opcodes.INVOKESTATIC, owner, name, "()" + returnDescriptor, false);
++            method.visitInsn(returnDescriptor.equals("V") ? Opcodes.NOP : Opcodes.POP);
++        };
++    }
++
++    /** Emits a static field read of {@code owner.name}, discarding the value. */
++    static Consumer<MethodVisitor> readsStaticField(final String owner, final String name, final String descriptor) {
++        return method -> {
++            method.visitFieldInsn(Opcodes.GETSTATIC, owner, name, descriptor);
++            method.visitInsn(Opcodes.POP);
++        };
++    }
++}

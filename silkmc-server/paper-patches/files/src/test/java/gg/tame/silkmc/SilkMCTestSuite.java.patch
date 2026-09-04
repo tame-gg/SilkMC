@@ -1,0 +1,25 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/SilkMCTestSuite.java
+@@ -1,0 +_,22 @@
++package gg.tame.silkmc;
++
++import org.junit.platform.suite.api.SelectPackages;
++import org.junit.platform.suite.api.Suite;
++import org.junit.platform.suite.api.SuiteDisplayName;
++
++/**
++ * Runs the tests for SilkMC's own code.
++ *
++ * <p>{@code tasks.test} only includes classes matching {@code **&#47;**TestSuite.class}, and the
++ * upstream suites select the {@code org.bukkit}, {@code io.papermc.paper} and
++ * {@code com.destroystokyo.paper} packages, so SilkMC needs its own entry point to be run at all.
++ *
++ * <p>Everything selected here is a plain unit test: no server, no registries, no world. That is
++ * deliberate - these cover the pure logic that SilkMC maintains as patches, which is exactly what
++ * an upstream rebase is most likely to break quietly.
++ */
++@Suite(failIfNoTests = false)
++@SuiteDisplayName("SilkMC unit tests")
++@SelectPackages("gg.tame.silkmc")
++public class SilkMCTestSuite {
++}

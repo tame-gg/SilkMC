@@ -1,0 +1,179 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/compat/SilkPluginScannerTest.java
+@@ -1,0 +_,176 @@
++package gg.tame.silkmc.server.compat;
++
++import static gg.tame.silkmc.server.compat.PluginJarBuilder.callsStatic;
++import static gg.tame.silkmc.server.compat.PluginJarBuilder.loadsStringConstant;
++import static gg.tame.silkmc.server.compat.PluginJarBuilder.readsStaticField;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import gg.tame.silkmc.server.compat.SilkPluginCompatibilityManager.Signals;
++import java.io.IOException;
++import java.nio.file.Path;
++import java.util.function.Consumer;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.objectweb.asm.MethodVisitor;
++import org.objectweb.asm.Opcodes;
++
++/**
++ * Covers what {@link SilkPluginCompatibilityManager#scanJar} does and does not treat as a
++ * reference. The scan decides whether a plugin loads at all, so a false positive here is a correct
++ * plugin refusing to start.
++ */
++class SilkPluginScannerTest {
++
++    @TempDir
++    Path directory;
++
++    private Signals scan(final PluginJarBuilder builder) throws IOException {
++        final Signals signals = new Signals();
++        SilkPluginCompatibilityManager.scanJar(builder.writeTo(this.directory.resolve("plugin.jar")), signals);
++        return signals;
++    }
++
++    private Signals scanClassWith(final Consumer<MethodVisitor> body) throws IOException {
++        return this.scan(new PluginJarBuilder().withClass("com/example/Plugin", body));
++    }
++
++    // --- the regression this scanner exists to prevent -----------------------------------------
++
++    @Test
++    @DisplayName("a string constant is not a reference")
++    void stringConstantsAreNotReferences() throws IOException {
++        // Every one of these used to match, because the scan searched the raw bytes of the class.
++        // A plugin that merely mentioned any of them in a message, a config key or a shaded
++        // library was classified UNSAFE and refused to load.
++        final Signals signals = this.scanClassWith(loadsStringConstant(
++            "isPrimaryThread org/spigotmc/AsyncCatcher net/minecraft/server org/bukkit/craftbukkit/ "
++                + "scheduleSyncDelayedTask callSyncMethod thread failed main thread check"));
++
++        assertFalse(signals.assumesMainThread, "a string mentioning isPrimaryThread is not a call to it");
++        assertFalse(signals.defeatsThreadChecks, "a string mentioning AsyncCatcher is not a reference to it");
++        assertFalse(signals.nms, "a string mentioning net/minecraft is not an NMS reference");
++        assertFalse(signals.craftBukkit, "a string mentioning craftbukkit is not a CraftBukkit reference");
++        assertFalse(signals.legacyScheduler, "a string mentioning the sync scheduler is not a call to it");
++        assertEquals(1, signals.scannedClasses);
++    }
++
++    @Test
++    @DisplayName("a plugin that never touches anything is clean")
++    void emptyPluginProducesNoSignals() throws IOException {
++        final Signals signals = this.scan(new PluginJarBuilder()
++            .withClass("com/example/Plugin")
++            .withClass("com/example/Other"));
++
++        assertFalse(signals.assumesMainThread);
++        assertFalse(signals.defeatsThreadChecks);
++        assertFalse(signals.nms);
++        assertFalse(signals.craftBukkit);
++        assertFalse(signals.legacyScheduler);
++        assertEquals(2, signals.scannedClasses);
++        assertEquals(0, signals.unreadableClasses);
++    }
++
++    // --- signals that must still be detected ---------------------------------------------------
++
++    @Test
++    @DisplayName("calling Bukkit.isPrimaryThread is detected")
++    void mainThreadCheckIsDetected() throws IOException {
++        final Signals signals = this.scanClassWith(callsStatic("org/bukkit/Bukkit", "isPrimaryThread", "Z"));
++
++        assertTrue(signals.assumesMainThread);
++        // The call alone is not grounds to refuse the plugin; see SilkPluginClassificationTest.
++        assertFalse(signals.defeatsThreadChecks);
++    }
++
++    @Test
++    @DisplayName("touching AsyncCatcher is detected")
++    void asyncCatcherReferenceIsDetected() throws IOException {
++        final Signals signals = this.scanClassWith(readsStaticField("org/spigotmc/AsyncCatcher", "enabled", "Z"));
++
++        assertTrue(signals.defeatsThreadChecks);
++    }
++
++    @Test
++    @DisplayName("legacy sync scheduler calls are detected")
++    void legacySchedulerCallsAreDetected() throws IOException {
++        for (final String name : new String[]{"scheduleSyncDelayedTask", "scheduleSyncRepeatingTask", "callSyncMethod"}) {
++            final Signals signals = this.scanClassWith(method -> {
++                method.visitMethodInsn(Opcodes.INVOKEINTERFACE, "org/bukkit/scheduler/BukkitScheduler", name,
++                    "(Lorg/bukkit/plugin/Plugin;)I", true);
++                method.visitInsn(Opcodes.POP);
++            });
++            assertTrue(signals.legacyScheduler, name + " should be detected");
++        }
++    }
++
++    @Test
++    @DisplayName("a call with the right name on an unrelated owner is not a scheduler call")
++    void sameMethodNameOnAnotherOwnerIsIgnored() throws IOException {
++        final Signals signals = this.scanClassWith(method -> {
++            method.visitMethodInsn(Opcodes.INVOKESTATIC, "com/example/MyUtil", "callSyncMethod", "()V", false);
++        });
++
++        assertFalse(signals.legacyScheduler);
++    }
++
++    @Test
++    @DisplayName("NMS and CraftBukkit references are detected through descriptors and supertypes")
++    void internalsAreDetectedThroughDescriptors() throws IOException {
++        final Signals viaCall = this.scanClassWith(
++            callsStatic("com/example/Helper", "level", "Lnet/minecraft/server/level/ServerLevel;"));
++        assertTrue(viaCall.nms, "an NMS type in a method descriptor is a reference");
++
++        final Signals viaOwner = this.scanClassWith(
++            callsStatic("org/bukkit/craftbukkit/CraftServer", "getServer", "V"));
++        assertTrue(viaOwner.craftBukkit, "a CraftBukkit call owner is a reference");
++    }
++
++    @Test
++    @DisplayName("array types are unwrapped rather than missed")
++    void arrayTypesAreUnwrapped() throws IOException {
++        final Signals signals = this.scanClassWith(method -> {
++            method.visitTypeInsn(Opcodes.CHECKCAST, "[Lnet/minecraft/world/entity/Entity;");
++            method.visitInsn(Opcodes.POP);
++        });
++
++        assertTrue(signals.nms);
++    }
++
++    // --- degraded inputs -----------------------------------------------------------------------
++
++    @Test
++    @DisplayName("an unparseable class is counted and skipped, not fatal")
++    void unparseableClassesAreSkipped() throws IOException {
++        final Signals signals = this.scan(new PluginJarBuilder()
++            .withClass("com/example/Plugin")
++            .withUnparseableClass("com/example/Broken"));
++
++        assertEquals(1, signals.scannedClasses);
++        assertEquals(1, signals.unreadableClasses);
++    }
++
++    @Test
++    @DisplayName("non-class entries are ignored")
++    void resourcesAreIgnored() throws IOException {
++        final Signals signals = this.scan(new PluginJarBuilder()
++            .withClass("com/example/Plugin")
++            .withResource("plugin.yml", "main: com.example.Plugin\nname: Example\n")
++            .withResource("config.yml", "message: isPrimaryThread org/spigotmc/AsyncCatcher\n"));
++
++        assertEquals(1, signals.scannedClasses);
++        assertFalse(signals.assumesMainThread, "text in a resource is not bytecode");
++        assertFalse(signals.defeatsThreadChecks);
++    }
++
++    @Test
++    @DisplayName("an unreadable jar reports failure to the caller")
++    void unreadableJarThrows() throws IOException {
++        final Path notAJar = PluginJarBuilder.writeRaw(this.directory.resolve("broken.jar"), "definitely not a jar");
++
++        assertThrows(IOException.class, () -> SilkPluginCompatibilityManager.scanJar(notAJar, new Signals()));
++    }
++}

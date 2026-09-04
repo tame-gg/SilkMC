@@ -1,0 +1,123 @@
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/bars/ServerStatusBarsTest.java
+@@ -1,0 +_,120 @@
++package gg.tame.silkmc.server.bars;
++
++import static gg.tame.silkmc.server.bars.ServerStatusBars.COLOR_GOOD;
++import static gg.tame.silkmc.server.bars.ServerStatusBars.COLOR_LOW;
++import static gg.tame.silkmc.server.bars.ServerStatusBars.COLOR_MEDIUM;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import net.kyori.adventure.bossbar.BossBar;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++
++/**
++ * Covers the pure formatting and threshold logic behind the status bars. These values are meant to
++ * match PurpurBars' defaults exactly, so drift here is a visible behaviour change with no other
++ * signal.
++ */
++class ServerStatusBarsTest {
++
++    @ParameterizedTest(name = "{0} bytes renders as {1}")
++    @CsvSource({
++        "0, 0B",
++        "1, 1B",
++        "1023, 1023B",
++        "1024, 1K",
++        "1536, 1K",           // K and M are whole units, so this truncates rather than rounding.
++        "1048575, 1023K",
++        "1048576, 1M",
++        "1572864, 1M",
++        "1073741824, 1.0G",   // Decimals start at G, which is where a heap bar normally sits.
++        "1610612736, 1.5G",
++        "1099511627776, 1.0T",
++        "1125899906842624, 1.0P",
++        "1152921504606846976, 1.0E"
++    })
++    @DisplayName("bytes format in base-1024 units")
++    void formatsBytes(final long bytes, final String expected) {
++        assertEquals(expected, ServerStatusBars.formatBytes(bytes));
++    }
++
++    @Test
++    @DisplayName("the largest possible heap does not overflow the unit table")
++    void formatsExtremeValues() {
++        // BYTE_UNITS runs out at 'E'; Long.MAX_VALUE must land inside it rather than index past.
++        assertEquals("8.0E", ServerStatusBars.formatBytes(Long.MAX_VALUE));
++    }
++
++    @ParameterizedTest(name = "progress {0} clamps to {1}")
++    @CsvSource({
++        "-1.0, 0.0",
++        "0.0, 0.0",
++        "0.5, 0.5",
++        "1.0, 1.0",
++        "2.0, 1.0"
++    })
++    @DisplayName("bar progress stays within the range a boss bar accepts")
++    void clampsProgress(final float value, final float expected) {
++        // Adventure rejects a progress outside [0, 1] with an exception, which would kill the
++        // refresh loop for that player.
++        assertEquals(expected, ServerStatusBars.clamp01(value));
++    }
++
++    @Test
++    @DisplayName("TPS colouring is keyed off the documented thresholds")
++    void tpsTiers() {
++        assertEquals(COLOR_GOOD, ServerStatusBars.tpsTier(20.0D));
++        assertEquals(COLOR_GOOD, ServerStatusBars.tpsTier(19.0D));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.tpsTier(18.99D));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.tpsTier(15.0D));
++        assertEquals(COLOR_LOW, ServerStatusBars.tpsTier(14.99D));
++        assertEquals(COLOR_LOW, ServerStatusBars.tpsTier(0.0D));
++    }
++
++    @Test
++    @DisplayName("MSPT colouring flips at the tick budget")
++    void msptTiers() {
++        assertEquals(COLOR_GOOD, ServerStatusBars.msptTier(0.0D));
++        assertEquals(COLOR_GOOD, ServerStatusBars.msptTier(39.99D));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.msptTier(40.0D));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.msptTier(49.99D));
++        assertEquals(COLOR_LOW, ServerStatusBars.msptTier(50.0D), "50ms is a full tick, which is not healthy");
++    }
++
++    @Test
++    @DisplayName("ping colouring flips at 100ms and 200ms")
++    void pingTiers() {
++        assertEquals(COLOR_GOOD, ServerStatusBars.pingTier(0));
++        assertEquals(COLOR_GOOD, ServerStatusBars.pingTier(99));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.pingTier(100));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.pingTier(199));
++        assertEquals(COLOR_LOW, ServerStatusBars.pingTier(200));
++    }
++
++    @Test
++    @DisplayName("RAM text and bar colour use their own separate thresholds")
++    void ramTiers() {
++        // The text tier and the bar colour deliberately do not share thresholds; this pins that so
++        // one cannot be changed to match the other by accident.
++        assertEquals(COLOR_GOOD, ServerStatusBars.ramTier(0.59F));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.ramTier(0.6F));
++        assertEquals(COLOR_MEDIUM, ServerStatusBars.ramTier(0.84F));
++        assertEquals(COLOR_LOW, ServerStatusBars.ramTier(0.85F));
++
++        assertEquals(BossBar.Color.GREEN, ServerStatusBars.ramBarColor(0.49F));
++        assertEquals(BossBar.Color.YELLOW, ServerStatusBars.ramBarColor(0.5F));
++        assertEquals(BossBar.Color.YELLOW, ServerStatusBars.ramBarColor(0.74F));
++        assertEquals(BossBar.Color.RED, ServerStatusBars.ramBarColor(0.75F));
++    }
++
++    @Test
++    @DisplayName("the TPS bar colour tracks MSPT, not TPS")
++    void tpsBarColourTracksMspt() {
++        assertEquals(BossBar.Color.GREEN, ServerStatusBars.tpsBarColor(0.0D));
++        assertEquals(BossBar.Color.GREEN, ServerStatusBars.tpsBarColor(39.99D));
++        assertEquals(BossBar.Color.YELLOW, ServerStatusBars.tpsBarColor(40.0D));
++        assertEquals(BossBar.Color.YELLOW, ServerStatusBars.tpsBarColor(49.99D));
++        assertEquals(BossBar.Color.RED, ServerStatusBars.tpsBarColor(50.0D));
++    }
++}
