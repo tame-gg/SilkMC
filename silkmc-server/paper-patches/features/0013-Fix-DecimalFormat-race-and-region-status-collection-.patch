@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 13:33:30 -0500
+Subject: [PATCH] Fix DecimalFormat race and region status collection in
+ compatibility manager
+
+
+diff --git a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
+index be28609db51238020d34e89421d358d8c1dabcb4..246af778cd792ece33451f8cfa7de61d43369367 100644
+--- a/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
++++ b/src/main/java/gg/tame/silkmc/server/compat/SilkPluginCompatibilityManager.java
+@@ -31,7 +31,9 @@ import org.objectweb.asm.Type;
+ public final class SilkPluginCompatibilityManager {
+ 
+     private static final Logger LOGGER = Logger.getLogger("SilkMC");
+-    private static final DecimalFormat MSPT_FORMAT = new DecimalFormat("#,##0.00");
++    // DecimalFormat is not thread-safe and /silkmc can be dispatched from any region thread, so each
++    // thread formats through its own instance rather than sharing one.
++    private static final ThreadLocal<DecimalFormat> MSPT_FORMAT = ThreadLocal.withInitial(() -> new DecimalFormat("#,##0.00"));
+     private static final Map<String, Inspection> INSPECTIONS = new ConcurrentHashMap<>();
+     private static final Map<String, Report> REPORTS = new ConcurrentHashMap<>();
+     private static final Map<String, String> OVERRIDE_LOG_KEYS = new ConcurrentHashMap<>();
+@@ -142,25 +144,36 @@ public final class SilkPluginCompatibilityManager {
+             .build();
+     }
+ 
++    /**
++     * Counts the live regions and finds the worst 5s MSPT among them.
++     *
++     * <p>Only the region identity and its tick report are needed, so both are accumulated inside the
++     * regioniser callback. Collecting every region into a list first would allocate a list proportional
++     * to the region count purely to walk it once, and - more importantly -
++     * {@code computeForAllRegions} runs the callback while holding the world's regioniser read lock,
++     * which blocks the write lock taken when chunk loading creates or destroys a region section. Reading
++     * the tick reports inside that callback keeps the lock held for the same span as before while
++     * removing the intermediate list; the reports are read from each region's own monitor and do not
++     * touch the regioniser.
++     */
+     public static RegionStatus collectRegionStatus() {
+-        final List<io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData>> regions =
+-            new ArrayList<>();
++        final long now = System.nanoTime();
++        final int[] regionCount = new int[1];
++        final double[] worstMspt = new double[1];
++
+         for (final org.bukkit.World bukkitWorld : org.bukkit.Bukkit.getWorlds()) {
+             final net.minecraft.server.level.ServerLevel world = ((org.bukkit.craftbukkit.CraftWorld) bukkitWorld).getHandle();
+-            world.regioniser.computeForAllRegions(regions::add);
+-        }
+-
+-        final long now = System.nanoTime();
+-        double worstMspt = 0.0D;
+-        for (final io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData> region : regions) {
+-            final ca.spottedleaf.common.time.TickData.TickReportData report = region.getData().getRegionSchedulingHandle().getTickReport5s(now);
+-            if (report == null) {
+-                continue;
+-            }
+-            worstMspt = Math.max(worstMspt, report.timePerTickData().segmentAll().average() / 1.0E6D);
++            world.regioniser.computeForAllRegions(region -> {
++                ++regionCount[0];
++                final ca.spottedleaf.common.time.TickData.TickReportData report =
++                    region.getData().getRegionSchedulingHandle().getTickReport5s(now);
++                if (report != null) {
++                    worstMspt[0] = Math.max(worstMspt[0], report.timePerTickData().segmentAll().average() / 1.0E6D);
++                }
++            });
+         }
+ 
+-        return new RegionStatus(regions.size(), worstMspt);
++        return new RegionStatus(regionCount[0], worstMspt[0]);
+     }
+ 
+     /**
+@@ -433,7 +446,7 @@ public final class SilkPluginCompatibilityManager {
+         } else {
+             color = NamedTextColor.GREEN;
+         }
+-        return Component.text(MSPT_FORMAT.format(value), color);
++        return Component.text(MSPT_FORMAT.get().format(value), color);
+     }
+ 
+     private static Component classificationValue(final int count, final Classification classification) {
+diff --git a/src/test/java/gg/tame/silkmc/server/scoreboard/ScoreboardObjectiveRemovalTest.java b/src/test/java/gg/tame/silkmc/server/scoreboard/ScoreboardObjectiveRemovalTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7723dc34b7c3f36a253394daae7a3860280af758
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/scoreboard/ScoreboardObjectiveRemovalTest.java
+@@ -0,0 +1,173 @@
++package gg.tame.silkmc.server.scoreboard;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicReference;
++import net.minecraft.network.chat.Component;
++import net.minecraft.world.scores.Objective;
++import net.minecraft.world.scores.ScoreHolder;
++import net.minecraft.world.scores.Scoreboard;
++import net.minecraft.world.scores.criteria.ObjectiveCriteria;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Covers the interaction between objective removal and the criteria update path.
++ *
++ * <p>Under region threading a criteria trigger (health, damage, death, a statistic) calls
++ * {@code getOrCreatePlayerScore} from whichever region thread owns the entity, deliberately without
++ * taking the scoreboard's write lock - locking there would put every region thread in contention on a
++ * single monitor. {@code removeObjective} does hold that lock. SilkMC closes the resulting
++ * create-after-sweep window by marking the objective removed before the sweep, so a racing update
++ * cannot store a score that the sweep has already passed.
++ *
++ * <p>These tests exercise the deterministic half of that guarantee. The residual window - a thread
++ * stalled between reading the mark and inserting, across both sweeps - is documented in
++ * {@code Scoreboard#removeObjective} and is deliberately not asserted here, because a test for it
++ * would be timing-dependent and flaky.
++ */
++class ScoreboardObjectiveRemovalTest {
++
++    private static final ScoreHolder HOLDER = ScoreHolder.forNameOnly("silk_test_holder");
++    private static final ScoreHolder OTHER_HOLDER = ScoreHolder.forNameOnly("silk_test_other");
++
++    private static Objective addObjective(final Scoreboard scoreboard, final String name) {
++        return scoreboard.addObjective(
++            name,
++            ObjectiveCriteria.DUMMY,
++            Component.literal(name),
++            ObjectiveCriteria.RenderType.INTEGER,
++            false,
++            null
++        );
++    }
++
++    @Test
++    @DisplayName("a score set before removal is swept away by removeObjective")
++    void removalClearsExistingScores() {
++        final Scoreboard scoreboard = new Scoreboard();
++        final Objective objective = addObjective(scoreboard, "removal_clears");
++
++        scoreboard.getOrCreatePlayerScore(HOLDER, objective).set(7);
++        assertNotNull(scoreboard.getPlayerScoreInfo(HOLDER, objective), "score should exist before removal");
++
++        scoreboard.removeObjective(objective);
++
++        assertNull(scoreboard.getPlayerScoreInfo(HOLDER, objective), "removal must sweep existing scores");
++        assertTrue(objective.silkIsRemoved(), "removal must mark the objective");
++    }
++
++    @Test
++    @DisplayName("a criteria update after removal does not resurrect the objective")
++    void updateAfterRemovalDoesNotResurrect() {
++        final Scoreboard scoreboard = new Scoreboard();
++        final Objective objective = addObjective(scoreboard, "no_resurrect");
++
++        scoreboard.removeObjective(objective);
++
++        // This is the shape of a criteria update that lost the race: it still holds a reference to the
++        // objective and writes through it. It must not reinstate an entry that nothing can clean up.
++        scoreboard.getOrCreatePlayerScore(OTHER_HOLDER, objective, true).set(42);
++
++        assertNull(
++            scoreboard.getPlayerScoreInfo(OTHER_HOLDER, objective),
++            "a post-removal update must not store a score for a removed objective"
++        );
++    }
++
++    @Test
++    @DisplayName("the detached score returned after removal is still usable and isolated")
++    void detachedScoreIsUsableAndIsolated() {
++        final Scoreboard scoreboard = new Scoreboard();
++        final Objective objective = addObjective(scoreboard, "detached_usable");
++        scoreboard.removeObjective(objective);
++
++        // Callers must not have to null-check; the access is real, it simply writes nowhere.
++        final var access = scoreboard.getOrCreatePlayerScore(HOLDER, objective, true);
++        access.set(5);
++        assertEquals(5, access.get(), "the detached score should still read back what was written to it");
++
++        // A second call hands back a fresh detached score rather than the first one, confirming nothing
++        // was retained between calls.
++        assertEquals(0, scoreboard.getOrCreatePlayerScore(HOLDER, objective, true).get());
++        assertNull(scoreboard.getPlayerScoreInfo(HOLDER, objective));
++    }
++
++    @Test
++    @DisplayName("removing one objective leaves other objectives untouched")
++    void removalIsScopedToOneObjective() {
++        final Scoreboard scoreboard = new Scoreboard();
++        final Objective removed = addObjective(scoreboard, "scoped_removed");
++        final Objective kept = addObjective(scoreboard, "scoped_kept");
++
++        scoreboard.getOrCreatePlayerScore(HOLDER, removed).set(1);
++        scoreboard.getOrCreatePlayerScore(HOLDER, kept).set(2);
++
++        scoreboard.removeObjective(removed);
++
++        assertNull(scoreboard.getPlayerScoreInfo(HOLDER, removed));
++        assertNotNull(scoreboard.getPlayerScoreInfo(HOLDER, kept), "unrelated objectives must survive");
++        assertEquals(2, scoreboard.getPlayerScoreInfo(HOLDER, kept).value());
++        assertFalse(kept.silkIsRemoved(), "only the removed objective should be marked");
++    }
++
++    @Test
++    @DisplayName("concurrent criteria updates during removal leave no scores behind")
++    void concurrentUpdatesDuringRemoval() throws Exception {
++        // Not a proof of the race being closed - it cannot be, the interleaving is not controllable - but
++        // it does catch the gross failure mode (removal throwing, or scores surviving wholesale) and it
++        // exercises the concurrent maps under contention.
++        for (int attempt = 0; attempt < 50; ++attempt) {
++            final Scoreboard scoreboard = new Scoreboard();
++            final Objective objective = addObjective(scoreboard, "concurrent_" + attempt);
++
++            final int writers = 4;
++            final CountDownLatch start = new CountDownLatch(1);
++            final CountDownLatch done = new CountDownLatch(writers);
++            final AtomicReference<Throwable> failure = new AtomicReference<>();
++
++            for (int i = 0; i < writers; ++i) {
++                final int writerIndex = i;
++                final Thread thread = new Thread(() -> {
++                    try {
++                        start.await();
++                        for (int n = 0; n < 200; ++n) {
++                            scoreboard.getOrCreatePlayerScore(
++                                ScoreHolder.forNameOnly("holder_" + writerIndex + "_" + n), objective, true
++                            ).set(n);
++                        }
++                    } catch (final Throwable throwable) {
++                        failure.compareAndSet(null, throwable);
++                    } finally {
++                        done.countDown();
++                    }
++                }, "silk-scoreboard-writer-" + i);
++                thread.setDaemon(true);
++                thread.start();
++            }
++
++            start.countDown();
++            scoreboard.removeObjective(objective);
++            assertTrue(done.await(30L, TimeUnit.SECONDS), "writers should finish");
++            assertNull(failure.get(), () -> "writer threw: " + failure.get());
++
++            // Every holder the writers touched must be free of the removed objective. Any survivor here
++            // would be an entry no cleanup path can reach.
++            for (int writer = 0; writer < writers; ++writer) {
++                for (int n = 0; n < 200; ++n) {
++                    final ScoreHolder holder = ScoreHolder.forNameOnly("holder_" + writer + "_" + n);
++                    assertNull(
++                        scoreboard.getPlayerScoreInfo(holder, objective),
++                        "no score for a removed objective should survive"
++                    );
++                }
++            }
++        }
++    }
++}

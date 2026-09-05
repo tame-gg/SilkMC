@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 13:32:24 -0500
+Subject: [PATCH] Report global region tick data for server-wide TPS APIs
+ off-region
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 9d0dc8815842a0583b212891680bd0c6461c30b9..313583748b0b79a07dcb93794ad2d3cd973532f9 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -2736,23 +2736,48 @@ public final class CraftServer implements Server {
+     @Override
+     public double getAverageTickTime() {
+         // Folia start - region threading
++        // SilkMC start - region threading - fall back to the global region off-thread instead of throwing
++        final io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle tickHandle = silk$currentOrGlobalTickHandle();
++        final long currTime = System.nanoTime();
++        final ca.spottedleaf.common.time.TickData.TickReportData report = tickHandle.getTickReport5s(currTime);
++        return report == null ? 0.0D : report.timePerTickData().segmentAll().average() / 1.0E6;
++        // SilkMC end - region threading
++        // Folia end - region threading
++    }
++
++    // SilkMC start - region threading - Bukkit's server-wide TPS/MSPT APIs have no single answer under
++    // region threading, and upstream Folia throws for any caller that is not currently on a region tick
++    // thread. That breaks a large class of unmodified Paper plugins which read these from async tasks,
++    // async chat handlers, bStats/metrics senders, web threads and plugin startup - none of which are on
++    // a region.
++    //
++    // Rather than fabricate a server-wide figure, SilkMC resolves the handle in this order:
++    //   1. the region currently being ticked by the calling thread, when there is one (unchanged
++    //      behaviour, and the most accurate answer for a caller that is on a region);
++    //   2. the current region when called from the shutdown thread (unchanged behaviour);
++    //   3. otherwise the global region's tick data.
++    //
++    // Case 3 is a real measurement of a real tick loop, not a synthesised value, but it describes the
++    // global region only - it does not describe the busiest region, and it is not comparable to Paper's
++    // whole-server figure. Plugins that need per-region accuracy should use Bukkit#getRegionTPS.
++    private static io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle silk$currentOrGlobalTickHandle() {
+         ca.spottedleaf.concurrentutil.scheduler.SchedulableTick task = io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentTickingTask();
+         if (task == null) {
+             // might be on the shutdown thread, try retrieving the current region
+-            if (io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion() != null) {
++            final io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion<io.papermc.paper.threadedregions.TickRegions.TickRegionData, io.papermc.paper.threadedregions.TickRegions.TickRegionSectionData>
++                currentRegion = io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion();
++            if (currentRegion != null) {
+                 // we are on the shutdown thread
+-                task = io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion().getData().getRegionSchedulingHandle();
++                task = currentRegion.getData().getRegionSchedulingHandle();
+             }
+         }
+-        if (!(task instanceof io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle tickHandle)) {
+-            throw new UnsupportedOperationException("Not on any region");
++        if (task instanceof io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle tickHandle) {
++            return tickHandle;
+         }
+-
+-
+-        long currTime = System.nanoTime();
+-        return tickHandle.getTickReport5s(currTime).timePerTickData().segmentAll().average() / 1.0E6;
+-        // Folia end - region threading
++        // Not on any region: report the global region rather than throwing.
++        return io.papermc.paper.threadedregions.RegionizedServer.getGlobalTickData();
+     }
++    // SilkMC end - region threading
+ 
+     private final org.bukkit.Server.Spigot spigot = new org.bukkit.Server.Spigot() {
+ 
+@@ -2809,28 +2834,32 @@ public final class CraftServer implements Server {
+     @Override
+     public double[] getTPS() {
+         // Folia start - region threading
+-        ca.spottedleaf.concurrentutil.scheduler.SchedulableTick task = io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentTickingTask();
+-        if (task == null) {
+-            // might be on the shutdown thread, try retrieving the current region
+-            if (io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion() != null) {
+-                // we are on the shutdown thread
+-                task = io.papermc.paper.threadedregions.TickRegionScheduler.getCurrentRegion().getData().getRegionSchedulingHandle();
+-            }
+-        }
+-        if (!(task instanceof io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle tickHandle)) {
+-            throw new UnsupportedOperationException("Not on any region");
+-        }
++        // SilkMC start - region threading - see silk$currentOrGlobalTickHandle; falls back to the global
++        // region off-thread instead of throwing, and reports 20 TPS for windows with no data yet rather
++        // than throwing NullPointerException out of an array initialiser.
++        final io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle tickHandle = silk$currentOrGlobalTickHandle();
+ 
+         // 1m, 5m, 15m
+-        long currTime = System.nanoTime();
++        final long currTime = System.nanoTime();
+         return new double[] {
+-                tickHandle.getTickReport1m(currTime).tpsData().segmentAll().average(),
+-                tickHandle.getTickReport5m(currTime).tpsData().segmentAll().average(),
+-                tickHandle.getTickReport15m(currTime).tpsData().segmentAll().average(),
++                silk$tps(tickHandle.getTickReport1m(currTime)),
++                silk$tps(tickHandle.getTickReport5m(currTime)),
++                silk$tps(tickHandle.getTickReport15m(currTime)),
+         };
++        // SilkMC end - region threading
+         // Folia end - region threading
+     }
+ 
++    // SilkMC start - region threading - a tick window with no samples yet (server just started, or a
++    // freshly created region) has no measured rate; report the nominal tick rate, which is what Paper
++    // reports for an idle server, rather than throwing.
++    private static double silk$tps(final ca.spottedleaf.common.time.TickData.TickReportData report) {
++        return report == null
++            ? (double) io.papermc.paper.threadedregions.TickRegionScheduler.TICK_RATE
++            : report.tpsData().segmentAll().average();
++    }
++    // SilkMC end - region threading
++
+     @Override
+     public void playSound(final net.kyori.adventure.sound.Sound sound) {
+         if (sound.seed().isEmpty()) org.spigotmc.AsyncCatcher.catchOp("play sound; cannot generate seed with world random");
+@@ -3087,13 +3116,26 @@ public final class CraftServer implements Server {
+             io.papermc.paper.threadedregions.TickRegions.TickRegionData regionData = region.getData();
+             final long currTime = System.nanoTime();
+             final io.papermc.paper.threadedregions.TickRegionScheduler.RegionScheduleHandle regionScheduleHandle = regionData.getRegionSchedulingHandle();
++            // SilkMC start - region threading - a region that has not accumulated tick data yet returns
++            // null reports (freshly created regions, and regions just formed by a split or merge), which
++            // is exactly when a plugin is most likely to be probing one. Report "no data" the same way a
++            // missing region is reported rather than throwing NullPointerException into plugin code.
++            final ca.spottedleaf.common.time.TickData.TickReportData report5s = regionScheduleHandle.getTickReport5s(currTime);
++            final ca.spottedleaf.common.time.TickData.TickReportData report15s = regionScheduleHandle.getTickReport15s(currTime);
++            final ca.spottedleaf.common.time.TickData.TickReportData report1m = regionScheduleHandle.getTickReport1m(currTime);
++            final ca.spottedleaf.common.time.TickData.TickReportData report5m = regionScheduleHandle.getTickReport5m(currTime);
++            final ca.spottedleaf.common.time.TickData.TickReportData report15m = regionScheduleHandle.getTickReport15m(currTime);
++            if (report5s == null || report15s == null || report1m == null || report5m == null || report15m == null) {
++                return null;
++            }
+             return new double[] {
+-                    regionScheduleHandle.getTickReport5s(currTime).tpsData().segmentAll().average(),
+-                    regionScheduleHandle.getTickReport15s(currTime).tpsData().segmentAll().average(),
+-                    regionScheduleHandle.getTickReport1m(currTime).tpsData().segmentAll().average(),
+-                    regionScheduleHandle.getTickReport5m(currTime).tpsData().segmentAll().average(),
+-                    regionScheduleHandle.getTickReport15m(currTime).tpsData().segmentAll().average(),
++                    report5s.tpsData().segmentAll().average(),
++                    report15s.tpsData().segmentAll().average(),
++                    report1m.tpsData().segmentAll().average(),
++                    report5m.tpsData().segmentAll().average(),
++                    report15m.tpsData().segmentAll().average(),
+             };
++            // SilkMC end - region threading
+         }
+     }
+     // Folia end - region TPS API

@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Fri, 5 Sep 2026 13:40:00 -0500
+Subject: [PATCH] Publish world border and scoreboard objective state safely
+
+
+diff --git a/net/minecraft/world/level/border/WorldBorder.java b/net/minecraft/world/level/border/WorldBorder.java
+index f1af23f..2b5672f 100644
+--- a/net/minecraft/world/level/border/WorldBorder.java
++++ b/net/minecraft/world/level/border/WorldBorder.java
+@@ -26,16 +26,23 @@ public class WorldBorder extends SavedData {
+         Identifier.withDefaultNamespace("world_border"), WorldBorder::new, CODEC, DataFixTypes.SAVED_DATA_WORLD_BORDER
+     );
+     private final WorldBorder.Settings settings;
+-    private boolean initialized;
+-    private final List<BorderChangeListener> listeners = Lists.newArrayList();
+-    private double damagePerBlock = 0.2;
+-    private double safeZone = 5.0;
+-    private int warningTime = 15;
+-    private int warningBlocks = 5;
+-    private double centerX;
+-    private double centerZ;
+-    private int absoluteMaxSize = 29999984;
+-    private WorldBorder.BorderExtent extent = new WorldBorder.StaticBorderExtent(5.999997E7F);
++    // SilkMC start - region threading - the border is mutated on the global region (tick(), and the
++    // Bukkit/command setters) but read by every region thread on movement and collision paths. Without
++    // safe publication a region thread can read a stale extent indefinitely, and a moving border swaps
++    // in a freshly constructed MovingBorderExtent that could otherwise be seen partially initialised.
++    // Listener registration comes from CraftWorldBorder on region threads while the global tick and the
++    // setters below iterate, so the backing list must tolerate concurrent mutation.
++    private volatile boolean initialized;
++    private final java.util.concurrent.CopyOnWriteArrayList<BorderChangeListener> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
++    private volatile double damagePerBlock = 0.2;
++    private volatile double safeZone = 5.0;
++    private volatile int warningTime = 15;
++    private volatile int warningBlocks = 5;
++    private volatile double centerX;
++    private volatile double centerZ;
++    private volatile int absoluteMaxSize = 29999984;
++    private volatile WorldBorder.BorderExtent extent = new WorldBorder.StaticBorderExtent(5.999997E7F);
++    // SilkMC end - region threading
+     public net.minecraft.server.level.@org.jspecify.annotations.Nullable ServerLevel world; // CraftBukkit
+     // Folia - region threadeing - duplicates are checked by tick loop
+ 
+@@ -255,8 +262,9 @@ public class WorldBorder extends SavedData {
+     }
+ 
+     public void addListener(final BorderChangeListener listener) {
+-        if (this.listeners.contains(listener)) return; // CraftBukkit
+-        this.listeners.add(listener);
++        // SilkMC - region threading - addIfAbsent keeps the CraftBukkit duplicate check atomic; a
++        // separate contains()/add() pair could admit a duplicate when two threads register at once.
++        this.listeners.addIfAbsent(listener); // CraftBukkit
+     }
+ 
+     public void removeListener(final BorderChangeListener listener) {
+diff --git a/net/minecraft/world/scores/Objective.java b/net/minecraft/world/scores/Objective.java
+index 64ea474..d706a37 100644
+--- a/net/minecraft/world/scores/Objective.java
++++ b/net/minecraft/world/scores/Objective.java
+@@ -22,6 +22,18 @@ public class Objective {
+     private ObjectiveCriteria.RenderType renderType;
+     private boolean displayAutoUpdate;
+     private @Nullable NumberFormat numberFormat;
++    // SilkMC start - region threading - see Scoreboard#removeObjective. Set before the removal sweep so
++    // criteria updates racing the removal do not resurrect a score for an objective that is going away.
++    private volatile boolean silkRemoved;
++
++    public final void silkMarkRemoved() {
++        this.silkRemoved = true;
++    }
++
++    public final boolean silkIsRemoved() {
++        return this.silkRemoved;
++    }
++    // SilkMC end - region threading
+ 
+     public Objective(
+         final Scoreboard scoreboard,
+diff --git a/net/minecraft/world/scores/PlayerScores.java b/net/minecraft/world/scores/PlayerScores.java
+index ca434ce..2dd39ff 100644
+--- a/net/minecraft/world/scores/PlayerScores.java
++++ b/net/minecraft/world/scores/PlayerScores.java
+@@ -16,12 +16,54 @@ class PlayerScores {
+     }
+ 
+     public Score getOrCreate(final Objective objective, final Consumer<Score> newResultCallback) {
+-        return this.scores.computeIfAbsent(objective, obj -> {
++        // SilkMC start - region threading - never create a score for an objective that is being removed.
++        // Criteria updates (health, damage, death, statistics) reach this from every region thread without
++        // holding the scoreboard's write lock, so without this check one could insert a score just after
++        // Scoreboard#removeObjective finished sweeping this holder, leaving an entry that no cleanup path
++        // can ever reach again. An existing score is still returned so a removal racing a read stays
++        // consistent; only creation is refused.
++        final Score existing = this.scores.get(objective);
++        if (existing != null) {
++            return existing;
++        }
++        if (objective.silkIsRemoved()) {
++            return detachedScore(newResultCallback);
++        }
++
++        final Score created = this.scores.computeIfAbsent(objective, obj -> {
+             Score newScore = new Score();
+             newResultCallback.accept(newScore);
+             return newScore;
+         });
++
++        // Publish-then-verify. The check above alone is not enough: this thread can read the mark as
++        // false and then be descheduled until after Scoreboard#removeObjective has finished sweeping, and
++        // the holder's whole PlayerScores may not even have existed when that sweep ran. Re-reading the
++        // mark after the insert closes it completely, because removeObjective sets the mark strictly
++        // before it sweeps: an insert therefore either happened before the sweep (and the sweep removed
++        // it) or after the mark was already visible (and this re-read sees it).
++        if (objective.silkIsRemoved()) {
++            this.scores.remove(objective, created);
++        }
++        return created;
++        // SilkMC end - region threading
++    }
++
++    // SilkMC start - region threading
++    /**
++     * A score that is deliberately not stored, handed back for an objective that is being removed.
++     *
++     * <p>Callers must not have to null-check, so the access is real; it simply writes nowhere.
++     * {@code ServerScoreboard#onScoreChanged} only broadcasts for objectives in
++     * {@code trackedObjectives}, which removal has already cleared, so no packets are emitted for it
++     * either.
++     */
++    private static Score detachedScore(final Consumer<Score> newResultCallback) {
++        final Score detached = new Score();
++        newResultCallback.accept(detached);
++        return detached;
+     }
++    // SilkMC end - region threading
+ 
+     public boolean remove(final Objective objective) {
+         return this.scores.remove(objective) != null;
+diff --git a/net/minecraft/world/scores/Scoreboard.java b/net/minecraft/world/scores/Scoreboard.java
+index 66fa780..7b5432e 100644
+--- a/net/minecraft/world/scores/Scoreboard.java
++++ b/net/minecraft/world/scores/Scoreboard.java
+@@ -249,6 +249,12 @@ public class Scoreboard {
+ 
+     public void removeObjective(final Objective objective) {
+         this.silk$writeLocked(() -> { // SilkMC - region threading
++        // SilkMC start - region threading - close the removal/creation race without locking the hot path.
++        // Criteria updates reach getOrCreatePlayerScore from every region thread and deliberately take no
++        // lock, so marking the objective removed BEFORE the sweep below is what stops a concurrent update
++        // from inserting a score this sweep has already passed. See PlayerScores#getOrCreate.
++        objective.silkMarkRemoved();
++        // SilkMC end - region threading
+         this.objectivesByName.remove(objective.getName());
+ 
+         for (DisplaySlot value : DisplaySlot.values()) {
+@@ -266,6 +272,10 @@ public class Scoreboard {
+             playerScore.remove(objective);
+         }
+ 
++        // Note: an update racing this sweep is handled by PlayerScores#getOrCreate, which re-reads the
++        // mark set above after inserting and removes its own entry if the objective went away. The mark
++        // is set strictly before this sweep, which is what makes that check sufficient.
++
+         this.onObjectiveRemoved(objective);
+         }); // SilkMC - region threading
+     }

@@ -1,0 +1,168 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 13:32:24 -0500
+Subject: [PATCH] Fix bridged legacy sync task lifecycle in the scheduler
+ bridge
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
+index 23a6b4b16dcc1c7802b4ad73d903a18362c79efa..5fc6480fecd404b8f43be591f1e2a230cb2ff746 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftFuture.java
+@@ -25,11 +25,7 @@ class CraftFuture<T> extends CraftTask implements Future<T> {
+             return false;
+         }
+         this.setPeriod(CraftTask.CANCEL);
+-        // SilkMC start - scheduler bridging
+-        if (this.foliaTask != null) {
+-            this.foliaTask.cancel();
+-        }
+-        // SilkMC end - scheduler bridging
++        this.silkCancelBridgedTask(); // SilkMC - scheduler bridging
+         return true;
+     }
+ 
+@@ -107,11 +103,7 @@ class CraftFuture<T> extends CraftTask implements Future<T> {
+             return false;
+         }
+         this.setPeriod(CraftTask.CANCEL);
+-        // SilkMC start - scheduler bridging
+-        if (this.foliaTask != null) {
+-            this.foliaTask.cancel();
+-        }
+-        // SilkMC end - scheduler bridging
++        this.silkCancelBridgedTask(); // SilkMC - scheduler bridging
+         this.notifyAll();
+         return true;
+     }
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
+index 935b31d39ea31be4837a3a36a95e54fcf4908b3b..61dd8e65593d394cfca05bd022d1ab2694d5f0b9 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/CraftTask.java
+@@ -29,7 +29,8 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+     private final Plugin plugin;
+     private final int id;
+     // SilkMC start - scheduler bridging
+-    io.papermc.paper.threadedregions.scheduler.ScheduledTask foliaTask;
++    volatile io.papermc.paper.threadedregions.scheduler.ScheduledTask foliaTask;
++    private volatile CraftScheduler silkOwningScheduler;
+     // SilkMC end - scheduler bridging
+     private final long createdAt = System.nanoTime();
+ 
+@@ -127,8 +128,33 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+     }
+ 
+     // SilkMC start - scheduler bridging
+-    void setFoliaTask(io.papermc.paper.threadedregions.scheduler.ScheduledTask task) {
++    void setFoliaTask(io.papermc.paper.threadedregions.scheduler.ScheduledTask task, CraftScheduler owningScheduler) {
+         this.foliaTask = task;
++        this.silkOwningScheduler = owningScheduler;
++    }
++
++    /**
++     * Cancels the underlying region-scheduler task backing a bridged legacy sync task, and drops this
++     * task from its scheduler's {@code runners} view.
++     *
++     * <p>Upstream only ever removes a sync task from {@code runners} in
++     * {@link CraftScheduler#mainThreadHeartbeat()}, which never runs on SilkMC because
++     * {@link CraftScheduler#handle} routes every sync task to {@link SilkSchedulerBridge} instead. Without
++     * this removal a repeating bridged task - or a one-shot cancelled before it fired, whose completion
++     * body therefore never runs - would stay in {@code runners} for the lifetime of the server, retaining
++     * the plugin's {@code Runnable} (and through it, potentially the plugin classloader) and making
++     * {@code isQueued}, {@code isCurrentlyRunning} and {@code getPendingTasks} report tasks that are gone.
++     */
++    final void silkCancelBridgedTask() {
++        final io.papermc.paper.threadedregions.scheduler.ScheduledTask foliaTask = this.foliaTask;
++        if (foliaTask != null) {
++            foliaTask.cancel();
++        }
++        final CraftScheduler owningScheduler = this.silkOwningScheduler;
++        if (owningScheduler != null) {
++            // Keyed removal: a later task may already have reused this id.
++            owningScheduler.runners.remove(Integer.valueOf(this.id), this);
++        }
+     }
+     // SilkMC end - scheduler bridging
+ 
+@@ -139,11 +165,7 @@ public class CraftTask implements BukkitTask, Runnable { // Spigot
+      */
+     boolean cancel0() {
+         this.setPeriod(CraftTask.CANCEL);
+-        // SilkMC start - scheduler bridging
+-        if (this.foliaTask != null) {
+-            this.foliaTask.cancel();
+-        }
+-        // SilkMC end - scheduler bridging
++        this.silkCancelBridgedTask(); // SilkMC - scheduler bridging
+         return true;
+     }
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
+index ef0f1d6647d8118279e7a73372725b48302b2af1..178bd440d1cc16610165da9a1be81df168023d5d 100644
+--- a/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
++++ b/src/main/java/org/bukkit/craftbukkit/scheduler/SilkSchedulerBridge.java
+@@ -32,6 +32,8 @@ public final class SilkSchedulerBridge {
+         GlobalRegionScheduler global = Bukkit.getGlobalRegionScheduler();
+         final Consumer<ScheduledTask> body = st -> {
+             if (task.isCancelled()) {
++                // Cancelled between firings. cancel0() has already cancelled the underlying task and
++                // dropped it from runners, so there is nothing left to do.
+                 return;
+             }
+             try {
+@@ -41,22 +43,45 @@ public final class SilkSchedulerBridge {
+                     "Task #" + task.getTaskId() + " for " + plugin.getName() + " generated an exception", ex);
+             }
+         };
++        // A one-shot task is done the moment its body returns, so it must leave runners then. Removal is
++        // keyed on the task itself because task ids are recycled, and it happens in a finally block so a
++        // throwing task does not leak its entry. Repeating tasks stay in runners until they are cancelled,
++        // which CraftTask#silkCancelBridgedTask handles.
+         final Consumer<ScheduledTask> oneShotBody = st -> {
+-            body.accept(st);
+-            scheduler.runners.remove(task.getTaskId());
++            try {
++                body.accept(st);
++            } finally {
++                scheduler.runners.remove(Integer.valueOf(task.getTaskId()), task);
++            }
+         };
+ 
++        // Publish to runners BEFORE scheduling: an immediate task can start on the global region thread
++        // as soon as run() returns, and if it completed before the put() below it would reinstate an
++        // entry that its own removal had already passed, leaking it permanently.
++        scheduler.runners.put(task.getTaskId(), task);
++
+         ScheduledTask scheduledTask;
+-        if (repeating) {
+-            scheduledTask = global.runAtFixedRate(plugin, body, safeDelay, safePeriod);
+-        } else if (delay <= 0L) {
+-            scheduledTask = global.run(plugin, oneShotBody);
+-        } else {
+-            scheduledTask = global.runDelayed(plugin, oneShotBody, safeDelay);
++        try {
++            if (repeating) {
++                scheduledTask = global.runAtFixedRate(plugin, body, safeDelay, safePeriod);
++            } else if (delay <= 0L) {
++                scheduledTask = global.run(plugin, oneShotBody);
++            } else {
++                scheduledTask = global.runDelayed(plugin, oneShotBody, safeDelay);
++            }
++        } catch (Throwable ex) {
++            // Scheduling failed (for example the plugin is being disabled); do not leave a phantom entry.
++            scheduler.runners.remove(Integer.valueOf(task.getTaskId()), task);
++            throw ex;
+         }
+ 
+-        task.setFoliaTask(scheduledTask);
+-        scheduler.runners.put(task.getTaskId(), task);
++        task.setFoliaTask(scheduledTask, scheduler);
++        // The task may have been cancelled while we were scheduling it; setFoliaTask happens after the
++        // schedule call, so a cancel0() that ran in that window found a null foliaTask and cancelled
++        // nothing. Re-check and clean up here so the cancellation is not lost.
++        if (task.isCancelled()) {
++            task.silkCancelBridgedTask();
++        }
+         return task;
+     }
+ }
