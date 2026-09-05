@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 14:05:06 -0500
+Subject: [PATCH] Add region-threading field publication contract test
+
+
+diff --git a/src/test/java/gg/tame/silkmc/server/scoreboard/RegionThreadingFieldContractTest.java b/src/test/java/gg/tame/silkmc/server/scoreboard/RegionThreadingFieldContractTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd8abbd01504a1a981921dd1f015af90fe9a2b6f
+--- /dev/null
++++ b/src/test/java/gg/tame/silkmc/server/scoreboard/RegionThreadingFieldContractTest.java
+@@ -0,0 +1,200 @@
++package gg.tame.silkmc.server.scoreboard;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Modifier;
++import java.util.List;
++import java.util.Set;
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.CopyOnWriteArrayList;
++import java.util.concurrent.CopyOnWriteArraySet;
++import net.minecraft.network.chat.Component;
++import net.minecraft.server.bossevents.CustomBossEvents;
++import net.minecraft.server.level.ServerBossEvent;
++import net.minecraft.world.BossEvent;
++import net.minecraft.world.scores.PlayerTeam;
++import net.minecraft.world.scores.Scoreboard;
++import org.junit.jupiter.api.DisplayName;
++import org.junit.jupiter.api.Test;
++
++/**
++ * Guards the safe publication that SilkMC's region-threading patches add to shared vanilla state.
++ *
++ * <p>These are structural assertions rather than behavioural ones, and that is deliberate. The state
++ * covered here - world border, scoreboards, teams, scores, boss bars - is mutated on one region
++ * thread and read on others, so the whole guarantee rests on a field being {@code volatile} or a
++ * collection being concurrent. Nothing about a normal test run would notice if an upstream rebase
++ * quietly dropped one of those keywords: the code still compiles, the server still starts, and the
++ * race only shows up in production under load. A field-level check fails loudly instead, which is
++ * exactly the failure mode {@code SilkMCTestSuite} exists to catch.
++ *
++ * <p>Each assertion names the patch it protects so a future rebase conflict can be resolved
++ * deliberately rather than by deleting the test.
++ */
++class RegionThreadingFieldContractTest {
++
++    /** Types whose iteration tolerates concurrent mutation. */
++    private static final List<Class<?>> CONCURRENT_TYPES = List.of(
++        ConcurrentHashMap.class,
++        CopyOnWriteArrayList.class,
++        CopyOnWriteArraySet.class,
++        java.util.concurrent.ConcurrentMap.class,
++        // ConcurrentHashMap.newKeySet() returns a KeySetView, which is not a public type.
++        ConcurrentHashMap.newKeySet().getClass()
++    );
++
++    private static Field field(final String className, final String fieldName) {
++        try {
++            final Field field = Class.forName(className).getDeclaredField(fieldName);
++            field.setAccessible(true);
++            return field;
++        } catch (final ReflectiveOperationException ex) {
++            throw new AssertionError(
++                "Expected " + className + "#" + fieldName + " to exist; if upstream renamed or removed it, "
++                    + "re-check that SilkMC's region-threading patch still applies to the replacement.", ex
++            );
++        }
++    }
++
++    private static void assertVolatile(final String className, final String fieldName, final String why) {
++        assertTrue(
++            Modifier.isVolatile(field(className, fieldName).getModifiers()),
++            () -> className + "#" + fieldName + " must be volatile: " + why
++        );
++    }
++
++    private static void assertFieldType(
++        final String className, final String fieldName, final Class<?> expected, final String why
++    ) {
++        final Class<?> actual = field(className, fieldName).getType();
++        assertTrue(
++            expected.isAssignableFrom(actual),
++            () -> className + "#" + fieldName + " must be a " + expected.getSimpleName()
++                + " (was " + actual.getName() + "): " + why
++        );
++    }
++
++    /**
++     * Asserts the field actually <em>holds</em> a thread-safe collection.
++     *
++     * <p>These fields are usually declared as {@code Map}/{@code Set}, so the declared type proves
++     * nothing - only the instance the initialiser creates does. That is why this takes an instance.
++     */
++    private static void assertConcurrentValue(final Object instance, final String fieldName, final String why) {
++        final Object value;
++        try {
++            value = field(instance.getClass().getName(), fieldName).get(instance);
++        } catch (final IllegalAccessException ex) {
++            throw new AssertionError(ex);
++        }
++        assertTrue(
++            CONCURRENT_TYPES.stream().anyMatch(type -> type.isInstance(value)),
++            () -> instance.getClass().getName() + "#" + fieldName
++                + " must hold a thread-safe collection (was " + value.getClass().getName() + "): " + why
++        );
++    }
++
++    @Test
++    @DisplayName("world border state is safely published across regions")
++    void worldBorderIsSafelyPublished() {
++        final String cls = "net.minecraft.world.level.border.WorldBorder";
++        final String why = "the border is mutated on the global region and read by every region thread "
++            + "on movement and collision paths (SilkMC: Publish world border and scoreboard objective state)";
++        assertVolatile(cls, "extent", why + "; a moving border swaps in a new BorderExtent");
++        assertVolatile(cls, "centerX", why);
++        assertVolatile(cls, "centerZ", why);
++        assertVolatile(cls, "warningTime", why);
++        assertVolatile(cls, "warningBlocks", why);
++        assertVolatile(cls, "damagePerBlock", why);
++        assertVolatile(cls, "safeZone", why);
++        assertVolatile(cls, "absoluteMaxSize", why);
++        assertFieldType(cls, "listeners", CopyOnWriteArrayList.class,
++            "CraftWorldBorder registers listeners from region threads while the global tick iterates them");
++    }
++
++    @Test
++    @DisplayName("scoreboard objective removal marker is safely published")
++    void objectiveRemovalMarkerIsVolatile() {
++        assertVolatile("net.minecraft.world.scores.Objective", "silkRemoved",
++            "PlayerScores#getOrCreate reads it without a lock on the criteria hot path, and the "
++                + "publish-then-verify handshake with Scoreboard#removeObjective depends on the ordering it provides");
++    }
++
++    @Test
++    @DisplayName("team and score state is safely published across regions")
++    void teamAndScoreStateIsSafelyPublished() {
++        final String team = "net.minecraft.world.scores.PlayerTeam";
++        final String teamWhy = "packet builders on every region thread read team state (SilkMC: Restore Bukkit scoreboard API)";
++        assertVolatile(team, "displayName", teamWhy);
++        assertVolatile(team, "playerPrefix", teamWhy);
++        assertVolatile(team, "playerSuffix", teamWhy);
++        assertVolatile(team, "allowFriendlyFire", teamWhy);
++        assertVolatile(team, "seeFriendlyInvisibles", teamWhy);
++        assertVolatile(team, "nameTagVisibility", teamWhy);
++        assertVolatile(team, "deathMessageVisibility", teamWhy);
++        assertVolatile(team, "collisionRule", teamWhy);
++        assertVolatile(team, "color", teamWhy);
++        assertConcurrentValue(new PlayerTeam(new Scoreboard(), "silk_contract_team"), "players",
++            "/team and the Bukkit API mutate membership from any region thread");
++
++        final String score = "net.minecraft.world.scores.Score";
++        final String scoreWhy = "scores are read by packet builders on other region threads";
++        assertVolatile(score, "value", scoreWhy);
++        assertVolatile(score, "locked", scoreWhy);
++        assertVolatile(score, "display", scoreWhy);
++        assertVolatile(score, "numberFormat", scoreWhy);
++    }
++
++    @Test
++    @DisplayName("server scoreboard tracking state is safely published")
++    void serverScoreboardStateIsSafelyPublished() {
++        assertVolatile("net.minecraft.server.ServerScoreboard", "dirty",
++            "set from whichever region thread mutated the scoreboard, read by the save path");
++        assertFieldType("net.minecraft.server.ServerScoreboard", "trackedObjectives", Set.class,
++            "consulted on every score change from every region thread");
++    }
++
++    @Test
++    @DisplayName("boss bar state is safely published across regions")
++    void bossBarStateIsSafelyPublished() {
++        // This protects the Bukkit BossBar API as much as /bossbar: CraftBossBar wraps ServerBossEvent,
++        // so any plugin can mutate a bar from any region thread.
++        assertVolatile("net.minecraft.server.level.ServerBossEvent", "visible",
++            "toggled by plugins and /bossbar from any region thread, read by every broadcast");
++        assertConcurrentValue(
++            new ServerBossEvent(
++                UUID.randomUUID(), Component.literal("silk"),
++                BossEvent.BossBarColor.WHITE, BossEvent.BossBarOverlay.PROGRESS
++            ),
++            "players", "plugins add and remove players while another thread broadcasts an update"
++        );
++
++        final String event = "net.minecraft.world.BossEvent";
++        final String why = "the Bukkit BossBar API mutates these from any region thread (SilkMC: boss bar concurrency)";
++        assertVolatile(event, "name", why);
++        assertVolatile(event, "progress", why);
++        assertVolatile(event, "color", why);
++        assertVolatile(event, "overlay", why);
++        assertVolatile(event, "darkenScreen", why);
++        assertVolatile(event, "playBossMusic", why);
++        assertVolatile(event, "createWorldFog", why);
++    }
++
++    @Test
++    @DisplayName("boss bar and scoreboard registries are concurrent maps")
++    void registriesAreConcurrent() {
++        assertConcurrentValue(new CustomBossEvents(), "events",
++            "/bossbar add and remove reach this registry from any region thread");
++
++        final Scoreboard board = new Scoreboard();
++        final String why = "scoreboard state is reachable from every region thread";
++        for (final String name : List.of(
++            "objectivesByName", "objectivesByCriteria", "playerScores",
++            "displayObjectives", "teamsByName", "teamsByPlayer"
++        )) {
++            assertConcurrentValue(board, name, why);
++        }
++    }
++}
