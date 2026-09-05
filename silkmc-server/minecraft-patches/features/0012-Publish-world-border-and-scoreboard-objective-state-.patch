@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Koels <kyle@tame.gg>
-Date: Fri, 5 Sep 2026 13:40:00 -0500
+Date: Sat, 5 Sep 2026 13:40:00 -0500
 Subject: [PATCH] Publish world border and scoreboard objective state safely
 
 
 diff --git a/net/minecraft/world/level/border/WorldBorder.java b/net/minecraft/world/level/border/WorldBorder.java
-index f1af23f..2b5672f 100644
+index f1af23f700c731cea1951a7a219757d1f2188575..2b5672fa6da6395eebb87cd896d3317d85d43d19 100644
 --- a/net/minecraft/world/level/border/WorldBorder.java
 +++ b/net/minecraft/world/level/border/WorldBorder.java
 @@ -26,16 +26,23 @@ public class WorldBorder extends SavedData {
@@ -55,7 +55,7 @@ index f1af23f..2b5672f 100644
  
      public void removeListener(final BorderChangeListener listener) {
 diff --git a/net/minecraft/world/scores/Objective.java b/net/minecraft/world/scores/Objective.java
-index 64ea474..d706a37 100644
+index 64ea4741b7ed58fe7914b9431353abd1f658a935..d706a371b931ece6fbb2c2fbf4d324406ecd32ac 100644
 --- a/net/minecraft/world/scores/Objective.java
 +++ b/net/minecraft/world/scores/Objective.java
 @@ -22,6 +22,18 @@ public class Objective {
@@ -78,7 +78,7 @@ index 64ea474..d706a37 100644
      public Objective(
          final Scoreboard scoreboard,
 diff --git a/net/minecraft/world/scores/PlayerScores.java b/net/minecraft/world/scores/PlayerScores.java
-index ca434ce..2dd39ff 100644
+index ca434ce7702ab80daa402f0b0b913f0f3a5f5f43..2dd39ff4fb06d53c9afad3440fdaea98636f5bd4 100644
 --- a/net/minecraft/world/scores/PlayerScores.java
 +++ b/net/minecraft/world/scores/PlayerScores.java
 @@ -16,12 +16,54 @@ class PlayerScores {
@@ -138,7 +138,7 @@ index ca434ce..2dd39ff 100644
      public boolean remove(final Objective objective) {
          return this.scores.remove(objective) != null;
 diff --git a/net/minecraft/world/scores/Scoreboard.java b/net/minecraft/world/scores/Scoreboard.java
-index 66fa780..7b5432e 100644
+index 66fa7800a76e7cb591e79321264ade2ba8434d92..7b5432ea4831a80f833d4b307a4eb7bc1339fc31 100644
 --- a/net/minecraft/world/scores/Scoreboard.java
 +++ b/net/minecraft/world/scores/Scoreboard.java
 @@ -249,6 +249,12 @@ public class Scoreboard {

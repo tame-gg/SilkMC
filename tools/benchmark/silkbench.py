@@ -421,7 +421,7 @@ class RunResult:
         summ = [s["summary"] for s in self.samples if s.get("summary")]
 
         region_avg, region_p95, region_p99, region_worst, region_util = [], [], [], [], []
-        region_tps = []
+        region_tps, region_blocked = [], []
         for s in self.samples:
             regs = [r for r in s.get("regions", []) if r.get("ticks", 0)]
             if not regs:
@@ -440,6 +440,11 @@ class RunResult:
             # Summed utilisation across regions approximates how many tick threads' worth of work the
             # server is actually doing: 1.0 == one thread saturated.
             region_util.append(sum(r.get("util", 0.0) for r in regs))
+            # Utilisation is wall time, so it rises whether a region is computing or blocked. This is
+            # the part that is NOT computing: mean per-tick wall time during which the region thread
+            # held no CPU. If SumUtil climbs with thread count and this climbs with it, the extra
+            # utilisation is contention, not work.
+            region_blocked.append(worst_region.get("blocked"))
 
         return {
             "global_avg_mspt": med([x.get("avg") for x in g]),
@@ -454,6 +459,7 @@ class RunResult:
             "worst_region_worst1pct_mspt": med(region_p99),
             "worst_region_worst_mspt": med(region_worst),
             "summed_region_util": med(region_util),
+            "worst_region_blocked_ms": med(region_blocked),
             "regions": med([x.get("regions") for x in summ]),
             "active_regions": med([x.get("activeRegions") for x in summ]),
             "tick_threads": med([x.get("tickThreads") for x in summ]),
@@ -586,7 +592,7 @@ def run_once(jar: Path, java: str, cfg: BenchConfig, run_dir: Path, rep: int) ->
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="SilkMC region workload benchmark")
-    ap.add_argument("--jar", required=True, type=Path)
+    ap.add_argument("--jar", required=True, type=lambda p: Path(p).resolve())
     ap.add_argument("--java", default="java")
     ap.add_argument("--out", type=Path, default=Path("bench-results"))
     ap.add_argument("--regions", type=int, default=4)
@@ -635,6 +641,12 @@ def main() -> int:
             )
             matrix.append(cfg)
 
+    # Fail before the matrix rather than after every repetition has burned its warmup and measurement
+    # window discovering the same thing.
+    if not args.jar.is_file():
+        print(f"error: jar not found: {args.jar}", file=sys.stderr)
+        return 2
+
     all_results = []
     for cfg in matrix:
         label = f"{cfg.scheduler}-t{cfg.threads}"
@@ -644,7 +656,10 @@ def main() -> int:
         for rep in range(cfg.repetitions):
             print(f"   rep {rep + 1}/{cfg.repetitions}", flush=True)
             run_dir = args.out / f"run-{label}-rep{rep}"
-            res = run_once(args.jar, args.java, cfg, run_dir, rep)
+            # The server is launched with its run directory as the working directory, so a jar path
+            # relative to the repository root would not resolve there. Resolve it up front rather than
+            # at launch, so a bad path is reported once instead of failing every repetition.
+            res = run_once(args.jar.resolve(), args.java, cfg, run_dir, rep)
             print(f"      setup_ok={res.setup_ok} chunks={res.chunks_loaded} "
                   f"blocksChanged={res.blocks_changed}"
                   + (f" NOTES: {'; '.join(res.notes)}" if res.notes else ""), flush=True)
@@ -684,7 +699,7 @@ def print_table(rows: list[dict]) -> None:
     # TPS first: it is what says whether the server kept up. A row with a flattering MSPT and a TPS
     # below 20 is a saturated server skipping ticks, not a fast one.
     hdr = ["Scheduler", "Thr", "Rgn", "minTPS", "WorstRgn avg", "worst5%", "worst1%", "maxTick",
-           "Global avg", "SumUtil", "HeapMB"]
+           "Global avg", "SumUtil", "Blocked", "HeapMB"]
     print("\n| " + " | ".join(hdr) + " |")
     print("|" + "|".join(["---"] * len(hdr)) + "|")
     for r in rows:
@@ -692,7 +707,7 @@ def print_table(rows: list[dict]) -> None:
             r.get("scheduler"), r.get("tick_threads"), r.get("regions"), r.get("min_region_tps"),
             r.get("worst_region_avg_mspt"), r.get("worst_region_worst5pct_mspt"),
             r.get("worst_region_worst1pct_mspt"), r.get("worst_region_worst_mspt"), r.get("global_avg_mspt"),
-            r.get("summed_region_util"), r.get("heap_used_mb"),
+            r.get("summed_region_util"), r.get("worst_region_blocked_ms"), r.get("heap_used_mb"),
         ]) + " |")
 
 

@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 17:59:23 -0500
+Subject: [PATCH] Report per-region blocked time in the benchmark snapshot
+
+Utilisation is wall time inside the tick divided by the interval, not CPU
+time, so a region blocked on a lock accrues utilisation exactly as one
+doing work does. Summed utilisation rising with thread count therefore
+does not establish that more CPU is being burned - which is a conclusion
+it is very easy to draw from it, and one this reports cannot support.
+
+missingCPUTimeData is (tick wall time - tick CPU time): the portion of
+each tick during which the region thread held no CPU. It is already
+computed on every region tick from the ThreadMXBean samples TickTime
+carries, so exposing it adds no measurement and no tick-loop cost, and it
+separates real parallel work from parallelism overhead.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+index e67386f490284245bcddf691ab9a5e3af6bbf2bb..1533ad08077adcbf65975a42ecbd03504a593872 100644
+--- a/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
++++ b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+@@ -49,7 +49,7 @@ public final class RegionStatsSnapshot {
+     /** One tick window: MSPT figures in milliseconds, plus TPS and the sample count behind them. */
+     public record Window(
+         int ticks, double tps, double avg, double median, double p95, double p99, double worst,
+-        double utilisation
++        double utilisation, double missingCpu
+     ) {
+         static Window from(final TickData.TickReportData report) {
+             if (report == null) {
+@@ -73,7 +73,16 @@ public final class RegionStatsSnapshot {
+                 ns(mspt.segment5PercentWorst().average()),
+                 ns(mspt.segment1PercentWorst().average()),
+                 ns(mspt.segmentAll().greatest()),
+-                report.utilisation()
++                // Utilisation is WALL time inside the tick divided by the interval - not CPU time. A
++                // region blocked on a lock still accrues utilisation, so a rise in utilisation alone
++                // does not establish that more CPU is being burned.
++                report.utilisation(),
++                // ...which is what this separates out. missingCPUTimeData is (tick wall time - tick CPU
++                // time): time the region thread spent inside its tick while NOT running on a CPU, i.e.
++                // blocked on contention or waiting. It is already computed on every region tick from
++                // the ThreadMXBean samples TickTime carries, so reading it costs nothing extra, and it
++                // is the figure that distinguishes real parallel work from parallelism overhead.
++                ns(report.missingCPUTimeData().segmentAll().average())
+             );
+         }
+ 
+@@ -97,7 +106,8 @@ public final class RegionStatsSnapshot {
+             + " " + prefix + "p95=" + fmt(window.p95())
+             + " " + prefix + "p99=" + fmt(window.p99())
+             + " " + prefix + "worst=" + fmt(window.worst())
+-            + " " + prefix + "util=" + fmt(window.utilisation());
++            + " " + prefix + "util=" + fmt(window.utilisation())
++            + " " + prefix + "blocked=" + fmt(window.missingCpu());
+     }
+ 
+     /**

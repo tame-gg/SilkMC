@@ -70,7 +70,8 @@ region tick regardless.
 | Median MSPT | `segmentAll().median()` |
 | Worst 5% / worst 1% MSPT | `segment5PercentWorst()` / `segment1PercentWorst()` |
 | Worst single tick | `segmentAll().greatest()` |
-| Utilisation | `TickReportData.utilisation()` |
+| Utilisation (wall, **not** CPU) | `TickReportData.utilisation()` |
+| Blocked time per tick | `missingCPUTimeData().segmentAll().average()` |
 | Region count / active region count | regioniser enumeration |
 | Tick threads | `TickRegions.getScheduler().getTotalThreadCount()` |
 | Chunks / entities / players per region | `TickRegions.RegionStats` |
@@ -83,6 +84,32 @@ hypothetical: the first saturated matrix run here showed 1 tick thread with the 
 configuration (12.9 ms) while actually running at 11.9 TPS, against 20.07 TPS everywhere else. The
 `minTPS` column exists so that trap is visible in the table rather than something you have to
 remember to check.
+
+**Utilisation is wall time, not CPU time.** `utilisation` is the fraction of the interval that a
+region spent *inside* its tick method - and a region blocked on a lock is still inside its tick. So
+`SumUtil` rising with thread count does **not** by itself mean more CPU is being burned; it can
+equally mean threads are spending longer waiting. This is an easy and tempting misreading, and it
+was made here before the `Blocked` column existed.
+
+`Blocked` is the mean per-tick wall time during which the region thread held no CPU at all
+(`tick wall time - tick CPU time`). Read the two together:
+
+- `SumUtil` up, `Blocked` flat -> the extra utilisation is real work.
+- `SumUtil` up, `Blocked` up -> the extra utilisation is contention, and adding threads is making
+  things worse rather than better.
+
+Measured on the saturating baseline (8 regions, EDF, medians of 2 reps), all rows at ~20 TPS:
+
+| Threads | WorstRgn avg | Blocked | avg - Blocked (on-CPU) | SumUtil |
+| --: | --: | --: | --: | --: |
+| 2 | 11.445 | 3.051 | 8.39 | 1.393 |
+| 4 | 12.654 | 2.761 | 9.89 | 1.570 |
+| 8 | 15.400 | 1.981 | 13.42 | 2.135 |
+
+Blocked time *falls* as threads are added, so the rising utilisation is not lock contention. On-CPU
+time per tick rises ~60% instead, for identical work at identical TPS - consistent with memory-system
+effects (less cache sharing, more cross-core traffic) rather than with anything in the region locking
+design.
 
 **On "P95/P99":** the server tracks the *mean of the worst 5%* and *mean of the worst 1%* of ticks,
 not true percentiles. These are reported as `worst5%` and `worst1%` rather than relabelled p95/p99,

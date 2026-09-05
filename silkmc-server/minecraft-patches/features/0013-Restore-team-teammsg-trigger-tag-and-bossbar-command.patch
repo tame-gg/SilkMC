@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Koels <kyle@tame.gg>
-Date: Fri, 5 Sep 2026 14:10:00 -0500
+Date: Sat, 5 Sep 2026 14:10:00 -0500
 Subject: [PATCH] Restore team, teammsg, trigger, tag and bossbar commands
 
 
 diff --git a/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
-index ea60c06..9439c40 100644
+index ea60c06382bf3182e096a0e6c6195e2b8aeda9f6..9439c400c97a216ff6aa06cdacc99fd721276c34 100644
 --- a/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
 +++ b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
 @@ -38,6 +38,66 @@ public final class RegionScopedScoreHolders {
@@ -93,7 +93,7 @@ index ea60c06..9439c40 100644
      }
  }
 diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
-index 51d01ff..f34f676 100644
+index 51d01ff1c38c668cadfff2f4b6f028f2bc53d11c..f34f676e2aa049ebd9668e370484e1305fe11ef7 100644
 --- a/net/minecraft/commands/Commands.java
 +++ b/net/minecraft/commands/Commands.java
 @@ -198,7 +198,7 @@ public class Commands {
@@ -127,7 +127,7 @@ index 51d01ff..f34f676 100644
          WeatherCommand.register(this.dispatcher);
          WorldBorderCommand.register(this.dispatcher);
 diff --git a/net/minecraft/server/bossevents/CustomBossEvents.java b/net/minecraft/server/bossevents/CustomBossEvents.java
-index fb55ed6..dcf6e0a 100644
+index fb55ed68a1f8470b551030a27ca2656555c93d9e..dcf6e0a603f3975978ad5a7b4868650664bc4977 100644
 --- a/net/minecraft/server/bossevents/CustomBossEvents.java
 +++ b/net/minecraft/server/bossevents/CustomBossEvents.java
 @@ -26,7 +26,9 @@ public class CustomBossEvents extends SavedData {
@@ -142,7 +142,7 @@ index fb55ed6..dcf6e0a 100644
      public @Nullable CustomBossEvent get(final Identifier id) {
          return this.events.get(id);
 diff --git a/net/minecraft/server/commands/TagCommand.java b/net/minecraft/server/commands/TagCommand.java
-index 97dbff6..e1b0aa4 100644
+index 97dbff6de2ba316724d19c5822ae83518eb72b9b..e1b0aa4cd4d51e580901cbda1c92f4b5df702c3e 100644
 --- a/net/minecraft/server/commands/TagCommand.java
 +++ b/net/minecraft/server/commands/TagCommand.java
 @@ -29,24 +29,36 @@ public class TagCommand {
@@ -187,7 +187,7 @@ index 97dbff6..e1b0aa4 100644
          Set<String> result = Sets.newHashSet();
  
 diff --git a/net/minecraft/server/commands/TeamCommand.java b/net/minecraft/server/commands/TeamCommand.java
-index b9c04e5..bcf683b 100644
+index b9c04e559db8352def5f6d73a5f7532e7cce9e0e..bcf683b4aadf52a09c64666ceadccde94cd399bb 100644
 --- a/net/minecraft/server/commands/TeamCommand.java
 +++ b/net/minecraft/server/commands/TeamCommand.java
 @@ -437,11 +437,20 @@ public class TeamCommand {
@@ -215,7 +215,7 @@ index b9c04e5..bcf683b 100644
          source.sendSuccess(() -> Component.translatable("commands.team.add.success", team.getFormattedDisplayName()), true);
          return scoreboard.getPlayerTeams().size();
 diff --git a/net/minecraft/server/level/ServerBossEvent.java b/net/minecraft/server/level/ServerBossEvent.java
-index f1c8e45..d5506e1 100644
+index f1c8e45fdc4d7c70c4c5c6d4d6533364b74dba97..d5506e178ad886a45629e7f50bf4e32bc2f05f29 100644
 --- a/net/minecraft/server/level/ServerBossEvent.java
 +++ b/net/minecraft/server/level/ServerBossEvent.java
 @@ -13,9 +13,15 @@ import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
@@ -237,7 +237,7 @@ index f1c8e45..d5506e1 100644
      public ServerBossEvent(final UUID id, final Component name, final BossEvent.BossBarColor color, final BossEvent.BossBarOverlay overlay) {
          super(id, name, color, overlay);
 diff --git a/net/minecraft/world/BossEvent.java b/net/minecraft/world/BossEvent.java
-index 484f8da..14c8c4a 100644
+index 484f8da6c1b3f93088040899196ba017fc8fb7c7..14c8c4adf0c592ce6a3f482171f272a04518dcfd 100644
 --- a/net/minecraft/world/BossEvent.java
 +++ b/net/minecraft/world/BossEvent.java
 @@ -8,14 +8,19 @@ import net.minecraft.util.StringRepresentable;
