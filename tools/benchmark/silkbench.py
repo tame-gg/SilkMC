@@ -110,7 +110,10 @@ class ServerProcess:
         if self.jfr_path:
             flags.append(
                 "-XX:StartFlightRecording=settings=profile,disk=true,"
-                f"filename={self.jfr_path},dumponexit=true"
+                # Absolute: the JVM resolves this against the server's working directory, which is the
+                # run directory the path already points into. A relative path nests it twice and the
+                # JVM then refuses to start at all.
+                f"filename={Path(self.jfr_path).resolve()},dumponexit=true"
             )
         flags += ["-jar", str(self.jar), "nogui"]
 

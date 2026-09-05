@@ -56,7 +56,7 @@ SilkMC currently classifies and disables plugins for known startup or task-time 
 
 - world and chunk access from the wrong thread or region context
 - global-region-only operations triggered from an ambiguous legacy context
-- legacy scheduler paths that still lack enough ownership context to bridge safely
+- legacy scheduler paths that touch region-owned state from the global region
 - synchronous teleport assumptions that cannot be preserved safely
 
 Each classified failure produces a log entry with:
@@ -81,6 +81,6 @@ When in doubt, SilkMC fails the operation cleanly and disables the plugin.
 
 - no fake global main thread is introduced
 - plugins that mutate cross-region state unsafely can still fail
-- some traditional Bukkit scheduler tasks still lack enough location or entity context for SilkMC to infer the safest owning region and are routed to the global region scheduler
+- legacy Bukkit sync scheduler tasks (`runTask`, `runTaskLater`, `runTaskTimer`, `callSyncMethod`) are routed to the global region scheduler, and this is deliberate rather than a gap awaiting more context. The guarantee those methods make is not "runs somewhere safe" but "runs on the one thread, in order, never concurrently with another sync task". The global region is what still provides that. Routing them per-region would let two sync tasks from the same plugin execute in parallel on different region threads, which is precisely what plugins use the sync scheduler to avoid - and richer location or entity context would not change that, because regions split and merge at runtime while plugin state stays shared. The cost is that legacy sync tasks do not scale with region parallelism; the alternative is silently breaking the mutual exclusion those plugins depend on. Plugins that need parallelism should move to the region, entity or async schedulers, where ownership is explicit.
 - some event ordering assumptions from traditional single-threaded servers remain impossible to preserve fully
 - some plugins detect "Folia" by class name lookup; the upstream classes still exist under their original packages for binary compatibility, but plugins that hard-fail on Folia detection should be updated to recognize SilkMC's brand
