@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 17:40:35 -0500
+Subject: [PATCH] Report per-region TPS alongside MSPT in the benchmark
+ snapshot
+
+
+diff --git a/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+index 218c8c738163f5593dbcde08bf43d30eab5d6403..e67386f490284245bcddf691ab9a5e3af6bbf2bb 100644
+--- a/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
++++ b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+@@ -46,9 +46,10 @@ public final class RegionStatsSnapshot {
+     private RegionStatsSnapshot() {
+     }
+ 
+-    /** One tick-time window, in milliseconds, plus the sample count it was computed from. */
++    /** One tick window: MSPT figures in milliseconds, plus TPS and the sample count behind them. */
+     public record Window(
+-        int ticks, double avg, double median, double p95, double p99, double worst, double utilisation
++        int ticks, double tps, double avg, double median, double p95, double p99, double worst,
++        double utilisation
+     ) {
+         static Window from(final TickData.TickReportData report) {
+             if (report == null) {
+@@ -57,6 +58,12 @@ public final class RegionStatsSnapshot {
+             final TickData.SegmentedAverage mspt = report.timePerTickData();
+             return new Window(
+                 report.collectedTicks(),
++                // TPS is the metric that says whether the region is actually keeping up, and it must
++                // be read alongside MSPT rather than instead of it. When a region falls behind, the
++                // ticks it does manage are the cheap ones, so its average MSPT goes DOWN even though
++                // the server is in a worse state - MSPT on its own will happily report a saturated
++                // server as the healthiest configuration in a matrix.
++                report.tpsData().segmentAll().average(),
+                 ns(mspt.segmentAll().average()),
+                 ns(mspt.segmentAll().median()),
+                 // "worst 5%" and "worst 1%" segments are the closest the server's own bookkeeping gets
+@@ -84,6 +91,7 @@ public final class RegionStatsSnapshot {
+             return prefix + "=none";
+         }
+         return prefix + "ticks=" + window.ticks()
++            + " " + prefix + "tps=" + fmt(window.tps())
+             + " " + prefix + "avg=" + fmt(window.avg())
+             + " " + prefix + "median=" + fmt(window.median())
+             + " " + prefix + "p95=" + fmt(window.p95())

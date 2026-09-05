@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Sat, 5 Sep 2026 15:29:04 -0500
+Subject: [PATCH] Add machine-readable region stats snapshot for the benchmark
+ harness
+
+
+diff --git a/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..218c8c738163f5593dbcde08bf43d30eab5d6403
+--- /dev/null
++++ b/src/main/java/gg/tame/silkmc/server/command/RegionStatsSnapshot.java
+@@ -0,0 +1,159 @@
++package gg.tame.silkmc.server.command;
++
++import ca.spottedleaf.common.time.TickData;
++import io.papermc.paper.threadedregions.RegionizedServer;
++import io.papermc.paper.threadedregions.ThreadedRegionizer;
++import io.papermc.paper.threadedregions.TickRegionScheduler;
++import io.papermc.paper.threadedregions.TickRegions;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.level.ChunkPos;
++import org.bukkit.Bukkit;
++import org.bukkit.World;
++import org.bukkit.craftbukkit.CraftWorld;
++
++/**
++ * Renders a machine-readable snapshot of region tick statistics, for the benchmark harness in
++ * {@code tools/benchmark}.
++ *
++ * <h2>Why this exists</h2>
++ *
++ * <p>{@code /tps} already reports per-region utilisation, MSPT and TPS, but only as coloured,
++ * human-formatted, multi-line text, and only the <i>average</i> MSPT. The tick windows the server
++ * already maintains carry considerably more than that - {@link TickData.SegmentedAverage} exposes
++ * the median, the best 95%/99% segments, the worst 5%/1% segments and the greatest single tick - and
++ * those are exactly the numbers needed to tell a change that lowers average MSPT apart from one that
++ * lowers average MSPT while making the worst ticks worse.
++ *
++ * <h2>Cost</h2>
++ *
++ * <p>This adds <b>no</b> instrumentation and no tick-loop overhead. Every value printed here is
++ * already computed and retained by {@code TickRegionScheduler.RegionScheduleHandle} on every region
++ * tick, whether or not anyone ever runs this command; all this does is read the existing windows and
++ * format them. Nothing here runs unless an operator invokes it.
++ *
++ * <h2>Threading</h2>
++ *
++ * <p>Region enumeration goes through {@code computeForAllRegions}, which holds the regioniser's read
++ * lock, and each tick report is read under that region's own monitor - the same access pattern
++ * {@code /tps} already uses. Values are accumulated inside the callback rather than collecting the
++ * regions into a list first, so the read lock is not held any longer than it already would be.
++ */
++public final class RegionStatsSnapshot {
++
++    private RegionStatsSnapshot() {
++    }
++
++    /** One tick-time window, in milliseconds, plus the sample count it was computed from. */
++    public record Window(
++        int ticks, double avg, double median, double p95, double p99, double worst, double utilisation
++    ) {
++        static Window from(final TickData.TickReportData report) {
++            if (report == null) {
++                return null;
++            }
++            final TickData.SegmentedAverage mspt = report.timePerTickData();
++            return new Window(
++                report.collectedTicks(),
++                ns(mspt.segmentAll().average()),
++                ns(mspt.segmentAll().median()),
++                // "worst 5%" and "worst 1%" segments are the closest the server's own bookkeeping gets
++                // to P95/P99. They are the mean of the worst 5%/1% of ticks rather than a strict
++                // percentile, which is a stricter (higher) figure - fine for comparison, but it must not
++                // be described as a true percentile.
++                ns(mspt.segment5PercentWorst().average()),
++                ns(mspt.segment1PercentWorst().average()),
++                ns(mspt.segmentAll().greatest()),
++                report.utilisation()
++            );
++        }
++
++        private static double ns(final double nanos) {
++            return nanos / 1.0E6D;
++        }
++    }
++
++    private static String fmt(final double value) {
++        return String.format(Locale.ROOT, "%.3f", value);
++    }
++
++    private static String render(final String prefix, final Window window) {
++        if (window == null) {
++            return prefix + "=none";
++        }
++        return prefix + "ticks=" + window.ticks()
++            + " " + prefix + "avg=" + fmt(window.avg())
++            + " " + prefix + "median=" + fmt(window.median())
++            + " " + prefix + "p95=" + fmt(window.p95())
++            + " " + prefix + "p99=" + fmt(window.p99())
++            + " " + prefix + "worst=" + fmt(window.worst())
++            + " " + prefix + "util=" + fmt(window.utilisation());
++    }
++
++    /**
++     * Builds the snapshot lines. Each line is {@code key=value} pairs separated by spaces, prefixed
++     * with a stable tag so a harness can grep for it without depending on log formatting.
++     */
++    public static List<String> render() {
++        final long now = System.nanoTime();
++        final List<String> lines = new ArrayList<>();
++
++        // Global region first: it is a single, always-present tick loop and its MSPT is the one that
++        // does not parallelise, so it is tracked separately from the per-region figures.
++        lines.add("SILKBENCH global " + render("", Window.from(RegionizedServer.getGlobalTickData().getTickReport15s(now))));
++
++        final int[] regionCount = new int[1];
++        final int[] activeRegions = new int[1];
++        final int[] totalChunks = new int[1];
++        final int[] totalEntities = new int[1];
++        final int[] totalPlayers = new int[1];
++        final List<String> regionLines = new ArrayList<>();
++
++        for (final World bukkitWorld : Bukkit.getWorlds()) {
++            final ServerLevel world = ((CraftWorld) bukkitWorld).getHandle();
++            final String worldName = bukkitWorld.getName();
++            world.regioniser.computeForAllRegions(region -> {
++                ++regionCount[0];
++                final TickRegions.RegionStats stats = region.getData().getRegionStats();
++                totalChunks[0] += stats.getChunkCount();
++                totalEntities[0] += stats.getEntityCount();
++                totalPlayers[0] += stats.getPlayerCount();
++
++                final Window window = Window.from(region.getData().getRegionSchedulingHandle().getTickReport15s(now));
++                if (window != null && window.ticks() > 0) {
++                    ++activeRegions[0];
++                }
++
++                final ChunkPos center = region.getCenterChunk();
++                regionLines.add(
++                    "SILKBENCH region world=" + worldName
++                        + " center=" + (center == null ? "none" : center.x() + "," + center.z())
++                        + " chunks=" + stats.getChunkCount()
++                        + " entities=" + stats.getEntityCount()
++                        + " players=" + stats.getPlayerCount()
++                        + " " + render("", window)
++                );
++            });
++        }
++
++        lines.add(
++            "SILKBENCH summary regions=" + regionCount[0]
++                + " activeRegions=" + activeRegions[0]
++                + " tickThreads=" + TickRegions.getScheduler().getTotalThreadCount()
++                + " chunks=" + totalChunks[0]
++                + " entities=" + totalEntities[0]
++                + " players=" + totalPlayers[0]
++                + " heapUsedMB=" + (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024L * 1024L)
++                + " heapMaxMB=" + Runtime.getRuntime().maxMemory() / (1024L * 1024L)
++        );
++        lines.addAll(regionLines);
++        return lines;
++    }
++
++    /** Convenience for callers that are not on a region thread. */
++    public static ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData> currentRegion() {
++        return TickRegionScheduler.getCurrentRegion();
++    }
++}
+diff --git a/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java b/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java
+index 629a04ad32eec0f8c5cd77b2e3a28745a796efdc..e487978288f4ba6705412afa2b802fda30720251 100644
+--- a/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java
++++ b/src/main/java/gg/tame/silkmc/server/command/SilkMCCommand.java
+@@ -21,13 +21,13 @@ import org.checkerframework.checker.nullness.qual.Nullable;
+ 
+ public final class SilkMCCommand extends Command {
+ 
+-    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "report", "reload");
++    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "report", "reload", "bench");
+     private static final int PAGE_SIZE = 8;
+ 
+     public SilkMCCommand() {
+         super("silkmc");
+         this.description = "SilkMC operator and compatibility commands";
+-        this.usageMessage = "/silkmc <status|plugins|report|reload>";
++        this.usageMessage = "/silkmc <status|plugins|report|reload|bench>";
+         this.setPermission("silkmc.command");
+         final var pluginManager = Bukkit.getPluginManager();
+         if (pluginManager.getPermission("silkmc.command") == null) {
+@@ -35,6 +35,18 @@ public final class SilkMCCommand extends Command {
+         }
+     }
+ 
++    /**
++     * Dumps a machine-readable snapshot of region tick statistics for the benchmark harness in
++     * {@code tools/benchmark}. Read-only: every figure is already maintained by the tick loop, so this
++     * adds no per-tick cost. See {@link RegionStatsSnapshot}.
++     */
++    private boolean executeBench(final CommandSender sender) {
++        for (final String line : RegionStatsSnapshot.render()) {
++            sender.sendMessage(Component.text(line));
++        }
++        return true;
++    }
++
+     @Override
+     public boolean execute(final CommandSender sender, final String commandLabel, final String[] args) {
+         if (!this.testPermission(sender)) {
+@@ -50,6 +62,7 @@ public final class SilkMCCommand extends Command {
+             case "plugins" -> this.executePlugins(sender, args);
+             case "report" -> this.executeReport(sender, args);
+             case "reload" -> this.executeReload(sender);
++            case "bench" -> this.executeBench(sender);
+             default -> {
+                 sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
+                 yield false;
