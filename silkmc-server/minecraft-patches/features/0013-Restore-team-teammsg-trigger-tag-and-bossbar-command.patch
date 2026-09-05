@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kyle@tame.gg>
+Date: Fri, 5 Sep 2026 14:10:00 -0500
+Subject: [PATCH] Restore team, teammsg, trigger, tag and bossbar commands
+
+
+diff --git a/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
+index ea60c06..9439c40 100644
+--- a/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
++++ b/gg/tame/silkmc/server/command/RegionScopedScoreHolders.java
+@@ -38,6 +38,66 @@ public final class RegionScopedScoreHolders {
+     private RegionScopedScoreHolders() {
+     }
+ 
++    /**
++     * Filters a resolved entity selection down to the entities the calling thread owns.
++     *
++     * <p>Used by commands that read or mutate entity state directly ({@code /tag}), where
++     * {@link net.minecraft.commands.arguments.EntityArgument} has resolved targets across every
++     * region. Unlike {@link #filterToRegion}, every element here is a live entity, so nothing is
++     * exempt: an entity this thread does not own may be mid-tick on its own region.
++     *
++     * <p>Shares the reporting and all-out-of-region behaviour of {@link #filterToRegion} so that both
++     * command families behave identically from an operator's point of view.
++     *
++     * @throws CommandSyntaxException if every matched entity is owned by another region
++     */
++    public static <T extends Entity> Collection<T> filterEntitiesToRegion(
++        final CommandSourceStack source,
++        final Collection<T> entities
++    ) throws CommandSyntaxException {
++        List<T> kept = null;
++        int skipped = 0;
++
++        for (final T entity : entities) {
++            if (!TickThread.isTickThreadFor(entity)) {
++                if (kept == null) {
++                    // First rejection: copy everything accepted so far.
++                    kept = new ArrayList<>(entities.size());
++                    for (final T earlier : entities) {
++                        if (earlier == entity) {
++                            break;
++                        }
++                        kept.add(earlier);
++                    }
++                }
++                skipped++;
++            } else if (kept != null) {
++                kept.add(entity);
++            }
++        }
++
++        if (kept == null) {
++            return entities; // nothing was out of region - hand back the original collection
++        }
++
++        if (kept.isEmpty()) {
++            throw ERROR_ALL_OUT_OF_REGION.create();
++        }
++
++        reportSkipped(source, skipped, kept.size());
++        return kept;
++    }
++
++    private static void reportSkipped(final CommandSourceStack source, final int skipped, final int kept) {
++        source.sendSuccess(
++            () -> Component.literal(
++                "Skipped " + skipped + " target" + (skipped == 1 ? "" : "s")
++                    + " owned by other regions; affected " + kept + "."
++            ).withStyle(ChatFormatting.YELLOW),
++            false
++        );
++    }
++
+     /**
+      * Filters {@code holders} down to those the calling thread may safely touch.
+      *
+@@ -76,15 +136,7 @@ public final class RegionScopedScoreHolders {
+             throw ERROR_ALL_OUT_OF_REGION.create();
+         }
+ 
+-        final int skippedCount = skipped;
+-        final int keptCount = kept.size();
+-        source.sendSuccess(
+-            () -> Component.literal(
+-                "Skipped " + skippedCount + " target" + (skippedCount == 1 ? "" : "s")
+-                    + " owned by other regions; affected " + keptCount + "."
+-            ).withStyle(ChatFormatting.YELLOW),
+-            false
+-        );
++        reportSkipped(source, skipped, kept.size());
+         return kept;
+     }
+ }
+diff --git a/net/minecraft/commands/Commands.java b/net/minecraft/commands/Commands.java
+index 51d01ff..f34f676 100644
+--- a/net/minecraft/commands/Commands.java
++++ b/net/minecraft/commands/Commands.java
+@@ -198,7 +198,7 @@ public class Commands {
+         AdvancementCommands.register(this.dispatcher);
+         AttributeCommand.register(this.dispatcher, context);
+         ExecuteCommand.register(this.dispatcher, context);
+-        //BossBarCommands.register(this.dispatcher, context); // Folia - region threading - TODO
++        BossBarCommands.register(this.dispatcher, context); // SilkMC - region threading - boss bar state is concurrent and player targets are resolved on the global region
+         ClearInventoryCommands.register(this.dispatcher, context);
+         //CloneCommands.register(this.dispatcher, context); // Folia - region threading - TODO
+         DamageCommand.register(this.dispatcher, context);
+@@ -251,16 +251,16 @@ public class Commands {
+         StopSoundCommand.register(this.dispatcher);
+         StopwatchCommand.register(this.dispatcher);
+         SummonCommand.register(this.dispatcher, context);
+-        //TagCommand.register(this.dispatcher); // Folia - region threading - TODO later
+-        //TeamCommand.register(this.dispatcher, context); // Folia - region threading - TODO later
+-        //TeamMsgCommand.register(this.dispatcher); // Folia - region threading - TODO later
++        TagCommand.register(this.dispatcher); // SilkMC - region threading - entity targets are region-scoped
++        TeamCommand.register(this.dispatcher, context); // SilkMC - region threading - team state is concurrent and score-holder selectors are region-scoped
++        TeamMsgCommand.register(this.dispatcher); // SilkMC - region threading - reads team membership by name and writes only to connections, like chat
+         TeleportCommand.register(this.dispatcher);
+         TellRawCommand.register(this.dispatcher, context);
+         //TestCommand.register(this.dispatcher, context); // Folia - region threading
+         //TickCommand.register(this.dispatcher); // Folia - region threading - TODO later
+         TimeCommand.register(this.dispatcher, context);
+         TitleCommand.register(this.dispatcher, context);
+-        //TriggerCommand.register(this.dispatcher); // Folia - region threading - TODO later
++        TriggerCommand.register(this.dispatcher); // SilkMC - region threading - only touches the executing player's own scores
+         WaypointCommand.register(this.dispatcher, context);
+         WeatherCommand.register(this.dispatcher);
+         WorldBorderCommand.register(this.dispatcher);
+diff --git a/net/minecraft/server/bossevents/CustomBossEvents.java b/net/minecraft/server/bossevents/CustomBossEvents.java
+index fb55ed6..dcf6e0a 100644
+--- a/net/minecraft/server/bossevents/CustomBossEvents.java
++++ b/net/minecraft/server/bossevents/CustomBossEvents.java
+@@ -26,7 +26,9 @@ public class CustomBossEvents extends SavedData {
+     public static final SavedDataType<CustomBossEvents> TYPE = new SavedDataType<>(
+         Identifier.withDefaultNamespace("custom_boss_events"), CustomBossEvents::new, CODEC, DataFixTypes.SAVED_DATA_CUSTOM_BOSS_EVENTS
+     );
+-    private final Map<Identifier, CustomBossEvent> events = Maps.newHashMap();
++    // SilkMC - region threading - /bossbar and the Bukkit API reach this registry from any region
++    // thread; creation and removal must not corrupt it or race a concurrent lookup.
++    private final Map<Identifier, CustomBossEvent> events = new java.util.concurrent.ConcurrentHashMap<>();
+ 
+     public @Nullable CustomBossEvent get(final Identifier id) {
+         return this.events.get(id);
+diff --git a/net/minecraft/server/commands/TagCommand.java b/net/minecraft/server/commands/TagCommand.java
+index 97dbff6..e1b0aa4 100644
+--- a/net/minecraft/server/commands/TagCommand.java
++++ b/net/minecraft/server/commands/TagCommand.java
+@@ -29,24 +29,36 @@ public class TagCommand {
+                             Commands.literal("add")
+                                 .then(
+                                     Commands.argument("name", StringArgumentType.word())
+-                                        .executes(c -> addTag(c.getSource(), EntityArgument.getEntities(c, "targets"), StringArgumentType.getString(c, "name")))
++                                        .executes(c -> addTag(c.getSource(), silkTargets(c), StringArgumentType.getString(c, "name")))
+                                 )
+                         )
+                         .then(
+                             Commands.literal("remove")
+                                 .then(
+                                     Commands.argument("name", StringArgumentType.word())
+-                                        .suggests((c, p) -> SharedSuggestionProvider.suggest(getTags(EntityArgument.getEntities(c, "targets")), p))
++                                        .suggests((c, p) -> SharedSuggestionProvider.suggest(getTags(silkTargets(c)), p))
+                                         .executes(
+-                                            c -> removeTag(c.getSource(), EntityArgument.getEntities(c, "targets"), StringArgumentType.getString(c, "name"))
++                                            c -> removeTag(c.getSource(), silkTargets(c), StringArgumentType.getString(c, "name"))
+                                         )
+                                 )
+                         )
+-                        .then(Commands.literal("list").executes(c -> listTags(c.getSource(), EntityArgument.getEntities(c, "targets"))))
++                        .then(Commands.literal("list").executes(c -> listTags(c.getSource(), silkTargets(c))))
+                 )
+         );
+     }
+ 
++    // SilkMC start - region threading - entity tags are entity state, and every branch of /tag either
++    // reads or mutates it. EntityArgument resolves selectors across every region, so the raw result may
++    // contain entities another region is ticking; restrict it to the entities this thread owns.
++    private static Collection<? extends Entity> silkTargets(
++        final com.mojang.brigadier.context.CommandContext<CommandSourceStack> context
++    ) throws CommandSyntaxException {
++        return gg.tame.silkmc.server.command.RegionScopedScoreHolders.filterEntitiesToRegion(
++            context.getSource(), EntityArgument.getEntities(context, "targets")
++        );
++    }
++    // SilkMC end - region threading
++
+     private static Collection<String> getTags(final Collection<? extends Entity> entities) {
+         Set<String> result = Sets.newHashSet();
+ 
+diff --git a/net/minecraft/server/commands/TeamCommand.java b/net/minecraft/server/commands/TeamCommand.java
+index b9c04e5..bcf683b 100644
+--- a/net/minecraft/server/commands/TeamCommand.java
++++ b/net/minecraft/server/commands/TeamCommand.java
+@@ -437,11 +437,20 @@ public class TeamCommand {
+ 
+     private static int createTeam(final CommandSourceStack source, final String name, final Component displayName) throws CommandSyntaxException {
+         Scoreboard scoreboard = source.getServer().getScoreboard();
+-        if (scoreboard.getPlayerTeam(name) != null) {
++        // SilkMC start - region threading - two /team add for the same name can execute on different
++        // region threads at once. Vanilla relies on a single command thread for this check-then-create;
++        // here both callers could pass the null check and both report success, with the loser silently
++        // configuring the winner's team. Taking the scoreboard's existing write lock (the same one
++        // addPlayerTeam uses) restores the vanilla outcome: exactly one creates, the other errors.
++        // This is a command path, not a criteria hot path, so it adds no per-tick contention.
++        final PlayerTeam created = scoreboard.silk$writeLocked(() ->
++            scoreboard.getPlayerTeam(name) != null ? null : scoreboard.addPlayerTeam(name)
++        );
++        if (created == null) {
+             throw ERROR_TEAM_ALREADY_EXISTS.create();
+         }
+-
+-        PlayerTeam team = scoreboard.addPlayerTeam(name);
++        PlayerTeam team = created;
++        // SilkMC end - region threading
+         team.setDisplayName(displayName);
+         source.sendSuccess(() -> Component.translatable("commands.team.add.success", team.getFormattedDisplayName()), true);
+         return scoreboard.getPlayerTeams().size();
+diff --git a/net/minecraft/server/level/ServerBossEvent.java b/net/minecraft/server/level/ServerBossEvent.java
+index f1c8e45..d5506e1 100644
+--- a/net/minecraft/server/level/ServerBossEvent.java
++++ b/net/minecraft/server/level/ServerBossEvent.java
+@@ -13,9 +13,15 @@ import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
+ import net.minecraft.world.BossEvent;
+ 
+ public class ServerBossEvent extends BossEvent {
+-    private final Set<ServerPlayer> players = Sets.newHashSet();
++    // SilkMC start - region threading - plugins add and remove players through the Bukkit BossBar API
++    // from any region thread while another thread broadcasts an update, so the member set must tolerate
++    // concurrent mutation during iteration. A concurrent set also keeps add/remove atomic, which the
++    // "did this actually change?" checks in addPlayer/removePlayer below depend on to avoid sending a
++    // duplicate add or a remove for a player who was never on the bar.
++    private final Set<ServerPlayer> players = java.util.concurrent.ConcurrentHashMap.newKeySet();
+     private final Set<ServerPlayer> unmodifiablePlayers = Collections.unmodifiableSet(this.players);
+-    private boolean visible = true;
++    private volatile boolean visible = true;
++    // SilkMC end - region threading
+ 
+     public ServerBossEvent(final UUID id, final Component name, final BossEvent.BossBarColor color, final BossEvent.BossBarOverlay overlay) {
+         super(id, name, color, overlay);
+diff --git a/net/minecraft/world/BossEvent.java b/net/minecraft/world/BossEvent.java
+index 484f8da..14c8c4a 100644
+--- a/net/minecraft/world/BossEvent.java
++++ b/net/minecraft/world/BossEvent.java
+@@ -8,14 +8,19 @@ import net.minecraft.util.StringRepresentable;
+ 
+ public abstract class BossEvent {
+     private final UUID id;
+-    public Component name;
+-    protected float progress;
+-    public BossEvent.BossBarColor color;
+-    public BossEvent.BossBarOverlay overlay;
+-    protected boolean darkenScreen;
+-    protected boolean playBossMusic;
+-    protected boolean createWorldFog;
+-    public net.kyori.adventure.bossbar.BossBar adventure; // Paper
++    // SilkMC start - region threading - boss bars are shared state. The Bukkit BossBar API
++    // (CraftBossBar wraps ServerBossEvent) lets any plugin mutate one from any region thread, and the
++    // bar is then read and broadcast from whichever thread does so, so every mutable field needs safe
++    // publication. Without it a plugin updating a bar on one region can be invisible to another.
++    public volatile Component name;
++    protected volatile float progress;
++    public volatile BossEvent.BossBarColor color;
++    public volatile BossEvent.BossBarOverlay overlay;
++    protected volatile boolean darkenScreen;
++    protected volatile boolean playBossMusic;
++    protected volatile boolean createWorldFog;
++    public volatile net.kyori.adventure.bossbar.BossBar adventure; // Paper
++    // SilkMC end - region threading
+ 
+     public BossEvent(final UUID id, final Component name, final BossEvent.BossBarColor color, final BossEvent.BossBarOverlay overlay) {
+         this.id = id;
