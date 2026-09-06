@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Koels <kylematthewglenn@proton.me>
+Date: Fri, 5 Sep 2025 20:15:00 +0000
+Subject: [PATCH] Raise the default tick thread count
+
+
+diff --git a/io/papermc/paper/threadedregions/TickRegions.java b/io/papermc/paper/threadedregions/TickRegions.java
+index a6ab9cb..abe1e92 100644
+--- a/io/papermc/paper/threadedregions/TickRegions.java
++++ b/io/papermc/paper/threadedregions/TickRegions.java
+@@ -44,12 +44,29 @@ public final class TickRegions implements ThreadedRegionizer.RegionCallbacks<Tic
+     private static int getTickThreads(final GlobalConfiguration.ThreadedRegions config) {
+         int tickThreads;
+         if (config.threads <= 0) {
+-            tickThreads = OSNuma.getNativeInstance().getTotalCores() / 2;
+-            if (tickThreads <= 4) {
+-                tickThreads = 1;
+-            } else {
+-                tickThreads =  tickThreads / 4;
+-            }
++            // SilkMC start - region threading - raise the default tick thread count
++            // Upstream halves the core count and then divides by four, collapsing to a single thread
++            // whenever cores/2 <= 4. Integer division makes that far broader than it reads: 8 and 12
++            // core machines both land on 1, and 12 cores stays at 1 because 6/4 truncates. A 32 core
++            // machine gets 4.
++            //
++            // Measured on a 12 core machine (tools/benchmark, 8 regions, mixed hopper/redstone/entity
++            // workload needing ~2.4 threads' worth of work): 1 thread sustained only ~10 TPS, while 2
++            // threads held ~20 TPS. The single-thread default therefore halves tick rate on a machine
++            // with eleven idle cores, and it does so invisibly - a region that cannot keep up skips
++            // ticks and the ticks it does manage are the cheap ones, so /tps reports the FASTEST
++            // average MSPT of any configuration while the server runs at half speed.
++            //
++            // The errors are not symmetric. Under-provisioning cost half the tick rate; over-
++            // provisioning cost only some CPU (summed region utilisation rose 1.39 -> 1.57 going from
++            // 2 to 4 threads, at identical TPS). A default should therefore lean high, so this uses
++            // cores/4 - exactly double upstream on large machines, and enough to clear the cliff at 8
++            // and 12 cores. It still reserves three quarters of the machine for the chunk system,
++            // Netty, GC workers and the global region.
++            //
++            // This is only the default: threaded-regions.threads in paper-global.yml still wins.
++            tickThreads = Math.max(1, OSNuma.getNativeInstance().getTotalCores() / 4);
++            // SilkMC end - region threading - raise the default tick thread count
+         } else {
+             tickThreads = config.threads;
+         }

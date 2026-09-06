@@ -16,6 +16,26 @@ SilkMC keeps Folia's regional multithreading model as the core execution archite
 - global tasks remain explicit instead of pretending there is a single main thread
 - cross-region operations should bridge intentionally and fail loudly when unsafe
 
+### Tick thread default
+
+With `threaded-regions.threads` left at its default, SilkMC uses `cores / 4` tick threads (minimum
+1). Upstream Folia halves the core count and divides by four, which collapses to a single thread on
+any machine with 8 or fewer usable cores - and, because of integer division, on 12-core machines too.
+
+The failure that causes is silent. Measured with `tools/benchmark` on a 12-core machine, under a
+workload needing about 2.4 threads' worth of work, one tick thread sustained roughly 10 TPS while two
+sustained 20. A region that cannot keep up skips ticks, and the ticks it does manage are the cheap
+ones, so `/tps` reports the *lowest* average MSPT of any configuration while the server runs at half
+speed.
+
+`cores / 4` leans deliberately high because the two errors are not symmetric: under-provisioning cost
+half the tick rate, while over-provisioning cost only some CPU (summed region utilisation rose 1.39
+to 1.57 going from 2 to 4 threads, at identical TPS). Three quarters of the machine remains for the
+chunk system, Netty, GC workers and the global region.
+
+Set `threaded-regions.threads` explicitly to override this; the default only applies when it is
+unset or non-positive.
+
 ### The global region is the serial bottleneck
 
 Region ticking parallelises; the global region does not. Anything on it is work that does not get
