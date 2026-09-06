@@ -16,6 +16,32 @@ SilkMC keeps Folia's regional multithreading model as the core execution archite
 - global tasks remain explicit instead of pretending there is a single main thread
 - cross-region operations should bridge intentionally and fail loudly when unsafe
 
+### The global region is the serial bottleneck
+
+Region ticking parallelises; the global region does not. Anything on it is work that does not get
+faster as regions or tick threads are added, so its contents are worth knowing. Per global tick
+(`RegionizedServer.globalTick`): click-callback expiry, the global region scheduler, clocks, console
+input, the player ping sample, a per-world pass (world border, weather, sleep, raids, sky brightness,
+time, ticket updates, map autosave), connection ticking, and `PlayerList.tick()`.
+
+Three of those scale with something an operator can increase, and are recorded here so they are not
+rediscovered as mysteries:
+
+- **`PlayerList.tick()` is O(n^2) in player count**, every 600 ticks (30s). For each player it builds
+  a `canSee`-filtered view of every other player and sends a latency update, so 1000 players is on
+  the order of a million visibility checks in a single global tick, on the one thread that cannot
+  parallelise. This is inherited CraftBukkit behaviour, but Folia's execution model concentrates it
+  on the serial region.
+- **`tickConnections()` is O(total connections) per tick even when almost every connection is
+  region-owned**, because ownership is tested inside the loop after the list has already been copied
+  and shuffled. The per-connection cost is small; the scan is not free at high player counts.
+- **`autoSaveMaps()` performs synchronous disk I/O on the global tick thread**, so a server with many
+  map items stalls every region for the duration of the write.
+
+None of these are currently measurable by `tools/benchmark`, which runs without clients and without
+map items - so none has been changed. They are documented as known scaling limits rather than fixed
+on the strength of a code reading.
+
 ## SilkMC additions
 
 - compatibility policy for unmarked plugins (warn vs strict) - `gg.tame.silkmc.server.compat.SilkPluginCompatibility`
