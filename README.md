@@ -14,7 +14,7 @@ It preserves Folia's regional multithreading architecture while presenting SilkM
 ## Current state
 
 - Upstream baseline: Folia `26.2` (`ver/26.2.x`)
-- Project stage: `v0.2.5-alpha`
+- Project stage: `v0.2.6-alpha`
 - Java toolchain: JDK 25
 - Build system: Gradle + Paperweight patch workflow
 
@@ -89,6 +89,7 @@ reconnects and restarts.
 - [Plugin Compatibility Reports](docs/testing/plugin-compatibility-reports.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Upstream and Attribution](docs/development/upstream.md)
+- [Alpha Release Notes (v0.2.6)](docs/releases/v0.2.6-alpha.md)
 - [Alpha Release Notes (v0.2.5)](docs/releases/v0.2.5-alpha.md)
 - [Alpha Release Notes (v0.2.4)](docs/releases/v0.2.4-alpha.md)
 - [Alpha Release Notes (v0.2.3)](docs/releases/v0.2.3-alpha.md)
