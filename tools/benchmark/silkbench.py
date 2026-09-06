@@ -60,6 +60,7 @@ class BenchConfig:
     scheduler: str = "EDF"              # EDF | WORK_STEALING
     heap: str = "4G"
     jfr: bool = False
+    extra_jvm_args: tuple[str, ...] = ()   # appended last, so a repeated -XX flag overrides the default
     grid_exponent: int = 4              # SilkMC default; region section = 2^grid_exponent chunks
     block_layers: int = 1               # planes of ticking blocks (hoppers/redstone) per region
     random_tick_speed: int = 0          # 0 keeps the run deterministic; raise to add block-tick load
@@ -80,11 +81,13 @@ class ServerProcess:
 
     READY = re.compile(r'\]: Done \([0-9.]+s\)!')
 
-    def __init__(self, jar: Path, cwd: Path, heap: str, jfr_path: Path | None):
+    def __init__(self, jar: Path, cwd: Path, heap: str, jfr_path: Path | None,
+                 extra_jvm_args: tuple[str, ...] = ()):
         self.jar = jar
         self.cwd = cwd
         self.heap = heap
         self.jfr_path = jfr_path
+        self.extra_jvm_args = extra_jvm_args
         self.proc: subprocess.Popen | None = None
         self.lines: "queue.Queue[str]" = queue.Queue()
         self._reader: threading.Thread | None = None
@@ -107,6 +110,9 @@ class ServerProcess:
             "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40", "-XX:G1HeapRegionSize=8M",
             "-XX:G1ReservePercent=20", "-XX:G1HeapWastePercent=5", "-XX:G1MixedGCCountTarget=4",
         ]
+        # Appended last so a repeated -XX option overrides the baseline above; this is what makes GC
+        # flag hypotheses testable without editing the harness.
+        flags += list(self.extra_jvm_args)
         if self.jfr_path:
             flags.append(
                 "-XX:StartFlightRecording=settings=profile,disk=true,"
@@ -513,7 +519,7 @@ def run_once(jar: Path, java: str, cfg: BenchConfig, run_dir: Path, rep: int) ->
     write_server_config(run_dir, cfg)
 
     jfr = (run_dir / "recording.jfr") if cfg.jfr else None
-    server = ServerProcess(jar, run_dir, cfg.heap, jfr)
+    server = ServerProcess(jar, run_dir, cfg.heap, jfr, tuple(cfg.extra_jvm_args))
     server.start(java)
     try:
         if not server.wait_ready():
@@ -597,6 +603,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="SilkMC region workload benchmark")
     ap.add_argument("--jar", required=True, type=lambda p: Path(p).resolve())
     ap.add_argument("--java", default="java")
+    ap.add_argument("--jvm-arg", action="append", default=[],
+                    help="Extra JVM argument, repeatable. Appended after the baseline flags, so "
+                         "repeating an -XX option overrides the default (e.g. "
+                         "--jvm-arg -XX:G1MaxNewSizePercent=20).")
     ap.add_argument("--out", type=Path, default=Path("bench-results"))
     ap.add_argument("--regions", type=int, default=4)
     ap.add_argument("--chunks-per-region", type=int, default=4)
@@ -641,6 +651,7 @@ def main() -> int:
                 scheduler=scheduler,
                 heap=args.heap,
                 jfr=args.jfr,
+                extra_jvm_args=tuple(args.jvm_arg),
             )
             matrix.append(cfg)
 

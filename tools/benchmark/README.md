@@ -189,6 +189,15 @@ With JFR for CPU/GC/allocation:
 | `--workload` | entity | `entity`, `hopper`, `redstone`, `mixed` |
 | `--block-layers` | 1 | Planes of ticking blocks per region; the main load dial |
 | `--random-tick-speed` | 0 | 0 keeps runs deterministic; raising it adds block-tick load |
+| `--jvm-arg` | - | Extra JVM argument, repeatable; appended after the baseline flags |
+
+`--jvm-arg` is what makes GC hypotheses testable without editing the harness. Because the value
+starts with `-`, it must be passed with an `=` or argparse will read it as another option:
+
+```bash
+--jvm-arg=-XX:G1MaxNewSizePercent=15     # correct
+--jvm-arg -XX:G1MaxNewSizePercent=15     # error: expected one argument
+```
 
 ## Relationship to `docs/benchmarking.md`
 
@@ -249,6 +258,32 @@ development had exactly this signature:
   and every one is rejected with "That position is not loaded".
 
 Both are fixed, and both are now detected rather than assumed.
+
+## GC pauses
+
+A stop-the-world pause halts *every* region thread at once, so it is the one cost regionisation
+cannot amortise: it is the same pause on a 1-thread server and an 8-thread one.
+
+Measured on the saturating baseline with the flags in `docs/benchmarking.md` (8G heap), against the
+same flags with a smaller young generation (`G1NewSizePercent=5`, `G1MaxNewSizePercent=15`), two runs
+per arm:
+
+| Arm | Pauses | Total GC ms | Mean pause | **Worst pause** |
+| --- | --: | --: | --: | --: |
+| Documented flags | 79 / 79 | 972 / 970 | 12.3 / 12.3 | **119 / 118** |
+| Smaller young gen | 204 / 184 | 1080 / 1026 | 5.3 / 5.6 | **64 / 65** |
+
+The GC effect is large and reproduces tightly: worst pause roughly halves and mean pause drops ~55%,
+paid for with ~2.4x as many pauses and ~6% more total GC time. Throughput is unaffected (both arms
+held ~20 TPS at ~11.4 ms average).
+
+**What is *not* established is that this improves the observed tick tail.** The first pair of runs
+showed `maxTick` falling 20.6 -> 14.3 and that looked conclusive; the confirmation pair had the
+baseline at 15.2 against 15.1, i.e. no difference at all. The 20.6 was baseline variance, not the
+flags. Worst-tick figures here are medians of 15-second windows, and the handful of pauses that
+exceed a tick budget are rare enough that they often do not land in a sampled window - so this
+harness can measure the pause distribution reliably but cannot currently resolve its effect on tick
+tails. Do not cite a tail-latency improvement from these numbers.
 
 ## Known limitations
 
